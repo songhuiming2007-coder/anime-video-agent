@@ -272,3 +272,103 @@ class TestByCharacterSPKeys:
         cands = [frame(1, "/a.mkv", 10.0, 100), frame(2, "/sp.mkv", 5.0, 100)]
         kept = cover._by_character(cands, "某番", "某人")
         assert [c["src"] for c in kept] == ["/a.mkv"], "SP 候选应被跳过，普通集照常过滤"
+
+
+class TestCoverBatchGrab:
+    """2026-11 封面抽帧合批护栏：连续 STEP 点合批单次解码，离散点与缓存命中照常。"""
+
+    def test_连续STEP点合批_离散与跨标签拆开(self):
+        pts = [
+            ("/a.mkv", 10.0, "段1 S01E01"),
+            ("/a.mkv", 10.5, "段1 S01E01"),
+            ("/a.mkv", 11.0, "段1 S01E01"),
+            ("/a.mkv", 11.5, "段2 S01E01"),     # 标签不同 → 拆开
+            ("/a.mkv", 23.5, "通篇 S01E01"),     # 间距 12s → 单点
+            ("/b.mkv", 1.0, "段3 S01E02"),
+            ("/b.mkv", 1.5, "段3 S01E02"),
+        ]
+        runs = cover._group_contiguous_runs(pts)
+        assert [(src, [i for i, _ in items]) for src, items in runs] == [
+            ("/a.mkv", [0, 1, 2]),
+            ("/a.mkv", [3]),
+            ("/a.mkv", [4]),
+            ("/b.mkv", [5, 6]),
+        ]
+
+    def test_grab_batch全部命中缓存不启ffmpeg(self, tmp_path, monkeypatch):
+        (tmp_path / "f0000.jpg").write_bytes(b"cached0")
+        (tmp_path / "f0001.jpg").write_bytes(b"cached1")
+        monkeypatch.setattr(cover.subprocess, "run",
+                            lambda *a, **kw: pytest.fail("缓存已全命中，不应调用 ffmpeg"))
+        got = cover._grab_batch("/a.mkv", [(0, 10.0), (1, 10.5)], tmp_path)
+        assert got == [(0, tmp_path / "f0000.jpg"), (1, tmp_path / "f0001.jpg")]
+
+    def test_grab_batch单次ffmpeg按序落盘目标名(self, tmp_path, monkeypatch):
+        cmds = []
+
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            for k in (1, 2, 3):
+                (tmp_path / f".batch_0005_{k:04d}.jpg").write_bytes(f"img{k}".encode())
+
+        monkeypatch.setattr(cover.subprocess, "run", fake_run)
+        got = cover._grab_batch("/a.mkv", [(5, 20.0), (6, 20.5)], tmp_path)
+        assert len(cmds) == 1
+        assert "-frames:v" in cmds[0] and cmds[0][cmds[0].index("-frames:v") + 1] == "2"
+        assert got == [(5, tmp_path / "f0005.jpg"), (6, tmp_path / "f0006.jpg")]
+        assert (tmp_path / "f0005.jpg").read_bytes() == b"img1"
+        assert (tmp_path / "f0006.jpg").read_bytes() == b"img2"
+        assert not (tmp_path / ".batch_0005_0003.jpg").exists()
+
+    def test_grab_batch真实视频零相位偏移等价单点grab(self, tmp_path):
+        """真实产物护栏（H1）：testsrc2 每帧画面自带帧号，批抽帧与逐点 _grab 像素 MAD 必须为 0，
+        若误用 fps=1/STEP 引入 +0.25s 偏移，帧号立变导致 MAD 暴涨。"""
+        import shutil
+        import subprocess as sp
+        from PIL import Image
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("需要 ffmpeg")
+        vid = tmp_path / "src.mp4"
+        sp.run([
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24000/1001:duration=3.5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", str(vid),
+        ], check=True, capture_output=True)
+        items = [(0, 0.37), (1, 0.87), (2, 1.37), (3, 1.87), (4, 2.37)]
+        ref_dir, batch_dir = tmp_path / "ref", tmp_path / "batch"
+        ref_dir.mkdir()
+        batch_dir.mkdir()
+        refs = [cover._grab(str(vid), t, ref_dir / f"f{idx:04d}.jpg") for idx, t in items]
+        got = cover._grab_batch(str(vid), items, batch_dir)
+        assert len(got) == len(items)
+        for ref_p, (idx, got_p) in zip(refs, got):
+            assert ref_p is not None and got_p is not None
+            a = np.asarray(Image.open(ref_p).convert("RGB"), dtype=np.float32)
+            b = np.asarray(Image.open(got_p).convert("RGB"), dtype=np.float32)
+            mad = float(np.abs(a - b).mean())
+            assert mad == 0.0, f"帧 {idx} 相对 _grab 存在相位偏移：MAD={mad:.2f}"
+
+    def test_grab_batch截断时清理尾部残留旧缓存不返回过期帧(self, tmp_path):
+        """真实产物护栏（H2）：近 EOF 截断只产出部分帧时，必须清理尾部预置的旧缓存文件并返回 None。"""
+        import shutil
+        import subprocess as sp
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("需要 ffmpeg")
+        vid = tmp_path / "short.mp4"
+        sp.run([
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=1.2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", str(vid),
+        ], check=True, capture_output=True)
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        stale_tail = raw / "f0003.jpg"
+        stale_tail.write_bytes(b"STALE_OLD_CACHE")
+        # 1.2s 短片从 0.2s 起步长 0.5s 最多只有 0.2/0.7 两帧，后两帧越过 EOF
+        items = [(0, 0.2), (1, 0.7), (2, 1.2), (3, 1.7)]
+        got = cover._grab_batch(str(vid), items, raw)
+        assert got[0][1] is not None and got[1][1] is not None
+        assert got[3] == (3, None)
+        assert not stale_tail.exists(), "截断后残留旧缓存文件必须被删除，不许冒充本次新帧"

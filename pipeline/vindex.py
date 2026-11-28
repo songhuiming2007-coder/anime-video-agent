@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import hashlib
 import json
 import os
@@ -483,10 +484,11 @@ def load_presence(anime: str, out_dir: Path = VINDEX_DIR,
     by_ep: dict[str, list[dict]] = {}
     thr_used: float | None = None
     rec_thr: float | None = None     # 各集文件自带的判定阈值，跨文件必须一致
-    for p in sorted(out_dir.glob(f"{anime}_*.presence.json")):
+    shots_cache: dict[tuple[str, str], dict] = {}
+    for p in sorted(out_dir.glob(f"{glob.escape(anime)}_*.presence.json")):
         d = json.loads(p.read_text(encoding="utf-8"))
         m = _check_meta(d["meta"], p, kind="presence", model_id=want_model,
-                        revision=want_rev)
+                        revision=want_rev, shots_cache=shots_cache)
         if m.get("producer") != want:
             raise SystemExit(
                 f"FAIL {p.name} 是 {m.get('producer')} 建的，当前配置要 {want}。\n"
@@ -510,7 +512,8 @@ def load_presence(anime: str, out_dir: Path = VINDEX_DIR,
                 f"     要用更低的判定阈值必须重建索引")
         thr_used = thr
         key = m["episode"]
-        sh = shots.load(anime, key)["shots"]
+        sh_doc = shots_cache.get((m.get("anime", anime), key))
+        sh = sh_doc["shots"] if sh_doc is not None else shots.load(anime, key)["shots"]
         # scores 与 tags 走同一条阈值线（>= thr 才进），所以「能排序」和
         # 「算在场」是同一批标签，语义零变化（ADR-0004）。scores 里的分是
         # 1−距离 / 概率，只用于同一段落内的 tie-break，不跨段落比较。
@@ -529,7 +532,8 @@ def load_presence(anime: str, out_dir: Path = VINDEX_DIR,
 
 
 def _check_meta(m: dict, path: Path, kind: str, model_id: str | None = None,
-                revision: str | None = None) -> dict:
+                revision: str | None = None,
+                shots_cache: dict[tuple[str, str], dict] | None = None) -> dict:
     """索引元信息硬校验。对不上直接失败，不许继续（ADR-0003）。
 
     **理由是这类不一致不会自己暴露。** 维度不同会崩，那算运气好；
@@ -552,18 +556,22 @@ def _check_meta(m: dict, path: Path, kind: str, model_id: str | None = None,
                 f"FAIL {path.name} 建索引时的模型版本是 {m['revision'][:12]}，"
                 f"本机缓存的是 {rev[:12]}。\n"
                 f"     换 backbone 常常不改维度，分数照样算得出来，所以这里必须硬失败。重建索引")
-    _check_meta_shots(m, path)
+    _check_meta_shots(m, path, shots_cache=shots_cache)
     return m
 
 
-def _check_meta_shots(m: dict, path: Path, shots_dir: Path | None = None, check: bool = True) -> None:
+def _check_meta_shots(m: dict, path: Path, shots_dir: Path | None = None, check: bool = True,
+                      shots_cache: dict[tuple[str, str], dict] | None = None) -> None:
     """镜头切分参数必须与当前镜头表一致，否则索引里的镜头号已经指向别的时间段。"""
     key = m.get("episode")
     if not key:
         return
     s_dir = shots_dir if shots_dir is not None else shots.SHOTS_DIR
     if s_dir == shots.SHOTS_DIR and check is True:
-        cur = shots.load(m["anime"], key)["meta"]
+        sh_doc = shots.load(m["anime"], key)
+        if shots_cache is not None:
+            shots_cache[(m["anime"], key)] = sh_doc
+        cur = sh_doc["meta"]
     else:
         cur = shots.load(m["anime"], key, out_dir=s_dir, check_config=check)["meta"]
     if m.get("shots") != _shots_fingerprint(cur):
@@ -609,7 +617,8 @@ def load_scene(anime: str, out_dir: Path = VINDEX_DIR,
 
     只认 `producer=captions` 的产物：旧 CLIP 索引（若盘上还有）在这里按 model_id 硬拒。
     """
-    pattern = f"{anime}_{episode}.scene.json" if episode else f"{anime}_*.scene.json"
+    ea = glob.escape(anime)
+    pattern = f"{ea}_{glob.escape(episode)}.scene.json" if episode else f"{ea}_*.scene.json"
     vecs, units, keys = [], [], []
     for p in sorted(out_dir.glob(pattern)):
         npy = p.with_suffix(".npy")
@@ -659,7 +668,7 @@ def caption_keys(anime: str, out_dir: Path = VINDEX_DIR) -> list[str]:
     """
     tail = len(".captions.json")
     return sorted((p.name[len(anime) + 1:-tail]
-                   for p in out_dir.glob(f"{anime}_*.captions.json")), key=key_sort)
+                   for p in out_dir.glob(f"{glob.escape(anime)}_*.captions.json")), key=key_sort)
 
 
 def _require_full_index(anime: str, have: set[str], what: str) -> None:
@@ -668,7 +677,7 @@ def _require_full_index(anime: str, have: set[str], what: str) -> None:
     **这是检索池缩水的当场失败。** 判据不是「找得到东西吗」（那个永远为真），
     而是「集数对得上吗」。探针要单集时显式给 `episode`，不走这条。
     """
-    want = {p.stem[len(anime) + 1:] for p in shots.SHOTS_DIR.glob(f"{anime}_*.json")}
+    want = {p.stem[len(anime) + 1:] for p in shots.SHOTS_DIR.glob(f"{glob.escape(anime)}_*.json")}
     miss = sorted(want - have)
     extra = sorted(have - want)
     if miss or extra:
@@ -1252,12 +1261,28 @@ def embed_model_ref() -> str:
 
 
 def embedder():
-    """bge-m3 文本嵌入器。第一次调用才加载（与 tagger 同一个纪律）。"""
+    """bge-m3 文本嵌入器。第一次调用才加载（与 tagger 同一个纪律），优先走本地目录/快照零网络加载。"""
     global _EMBEDDER
     if _EMBEDDER is None:
         from sentence_transformers import SentenceTransformer
 
-        _EMBEDDER = SentenceTransformer(embed_model_ref())
+        ref = embed_model_ref()
+        local_ref: str | None = None
+        if Path(ref).is_dir():
+            local_ref = ref
+        else:
+            try:
+                from huggingface_hub import snapshot_download
+                local_ref = snapshot_download(ref, local_files_only=True)
+            except (OSError, ValueError):
+                local_ref = None
+        if local_ref is not None:
+            try:
+                _EMBEDDER = SentenceTransformer(local_ref, local_files_only=True)
+            except (OSError, ValueError):
+                _EMBEDDER = None
+        if _EMBEDDER is None:
+            _EMBEDDER = SentenceTransformer(ref)
     return _EMBEDDER
 
 
@@ -1288,7 +1313,7 @@ def build_embed(anime: str, out_dir: Path = VINDEX_DIR, batch: int = 64,
     而错位之后每一条检索结果都还是「看起来正常」的。零向量与任何归一化查询的
     余弦是 0，永远过不了门槛——所以它等价于「这个镜头没有描述」，但**行数仍然对得上**。
     """
-    files = sorted(out_dir.glob(f"{anime}_*.captions.json"))
+    files = sorted(out_dir.glob(f"{glob.escape(anime)}_*.captions.json"))
     if not files:
         raise SystemExit(
             f"FAIL {out_dir} 下没有《{anime}》的 captions，先跑 "
@@ -1391,7 +1416,7 @@ def subtitle_index_count(anime: str, index_dir: Path) -> int:
     数进来，六条数字照样相等而检索池实际少一集——这正是「六条数字」要防的
     假绿（2026-08-16 审计 2-1）。
     """
-    return len([p for p in index_dir.glob(f"{anime}_*.json")
+    return len([p for p in index_dir.glob(f"{glob.escape(anime)}_*.json")
                 if p.with_suffix(".npy").exists()])
 
 
@@ -1407,7 +1432,7 @@ def caption_counts(anime: str, out_dir: Path = VINDEX_DIR) -> dict[str, int]:
     但必须显式计数）。零描述镜头在向量库里是零向量，永远过不了门槛。
     """
     out = {"episodes": 0, "files": 0, "shots": 0, "failed": 0, "pending": 0}
-    for p in sorted(out_dir.glob(f"{anime}_*.captions.json")):
+    for p in sorted(out_dir.glob(f"{glob.escape(anime)}_*.captions.json")):
         out["files"] += 1
         key = p.name[len(anime) + 1:-len(".captions.json")]
         rows = json.loads(p.read_text(encoding="utf-8")).get("captions", [])
@@ -1441,14 +1466,15 @@ def status(anime: str) -> dict[str, int]:
 
     notes = paths.DATA / "library" / "notes" / f"{anime}.md"
     n_notes = len(note_episodes(notes))
+    ea = glob.escape(anime)
     out = {
         "片源": len(load_sources(anime)),
         "字幕索引": subtitle_index_count(anime, INDEX_DIR),
         "笔记": n_notes,
-        "镜头表": len(list(shots.SHOTS_DIR.glob(f"{anime}_*.json"))),
-        "角色在场": len(list(VINDEX_DIR.glob(f"{anime}_*.presence.json"))),
+        "镜头表": len(list(shots.SHOTS_DIR.glob(f"{ea}_*.json"))),
+        "角色在场": len(list(VINDEX_DIR.glob(f"{ea}_*.presence.json"))),
     }
-    n_scene = len(list(VINDEX_DIR.glob(f"{anime}_*.scene.npy")))
+    n_scene = len(list(VINDEX_DIR.glob(f"{ea}_*.scene.npy")))
     # 未启用但盘上有残留 → 照样报出来，让人看见这份半吊子状态
     if scene_enabled(anime) or n_scene:
         out["画面语义"] = n_scene

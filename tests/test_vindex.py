@@ -981,3 +981,107 @@ def test_write_presence_写到一半失败_旧索引原样(tmp_path, monkeypatch
     with pytest.raises(KeyboardInterrupt):
         vindex.write_presence("番", "S01E01", [{"i": 0}], "test", {"decision_threshold": 0.5}, out_dir=tmp_path)
     assert json.loads(dest.read_text(encoding="utf-8")) == {"old": True}
+
+
+class TestVindexPerfAndGlobGuards:
+    """2026-11 视觉索引护栏：load_presence 去重 shots.load、embedder 零网络离线加载、元字符番名转义。"""
+
+    def test_load_presence每集仅调一次shots_load且模型错时先拒(self, tmp_path, monkeypatch):
+        from pipeline.faces import CCIP_MODEL, CCIP_REPO
+
+        fp = {"detector": "ffmpeg-scdet", "scene_threshold": 10.0, "min_shot": 0.5, "duration": 10.0}
+        shot_doc = {"meta": fp, "shots": [{"i": 0, "start": 0.0, "end": 5.0}]}
+        load_calls: list[tuple[str, str]] = []
+
+        def fake_shots_load(anime, key, **kw):
+            load_calls.append((anime, key))
+            return shot_doc
+
+        monkeypatch.setattr(vindex.shots, "load", fake_shots_load)
+        monkeypatch.setattr(vindex.paths, "model_revision", lambda repo: "rev1")
+        monkeypatch.setattr(vindex, "presence_producer", lambda: "ccip")
+        monkeypatch.setattr(vindex, "_require_full_index", lambda *a, **kw: None)
+        monkeypatch.setattr(vindex, "alias_map", lambda a: {"阿尔托莉雅": "saber"})
+
+        anime = "Fate [UBW]"
+        pres_doc = {
+            "meta": {
+                "kind": "presence",
+                "anime": anime,
+                "episode": "S01E01",
+                "model_id": CCIP_REPO + "/" + CCIP_MODEL,
+                "revision": "rev1",
+                "producer": "ccip",
+                "decision_threshold": 0.6,
+                "shots": vindex._shots_fingerprint(fp),
+                "shots_count": 1,
+            },
+            "shots": [{"i": 0, "char": {"saber": 0.9}}],
+        }
+        (tmp_path / f"{anime}_S01E01.presence.json").write_text(
+            json.dumps(pres_doc, ensure_ascii=False), encoding="utf-8"
+        )
+        pres = vindex.load_presence(anime, out_dir=tmp_path)
+        assert pres.episodes() == {"S01E01"}
+        assert load_calls == [(anime, "S01E01")], "每集只应加载一次镜头表（复用 shots_cache）"
+
+        # 换模型必须在查镜头表之前就被拒
+        load_calls.clear()
+        pres_doc["meta"]["model_id"] = "wrong/model"
+        (tmp_path / f"{anime}_S01E01.presence.json").write_text(
+            json.dumps(pres_doc, ensure_ascii=False), encoding="utf-8"
+        )
+        with pytest.raises(SystemExit, match="模型"):
+            vindex.load_presence(anime, out_dir=tmp_path)
+        assert load_calls == []
+
+    def test_embedder优先离线快照加载并支持回退(self, tmp_path, monkeypatch):
+        import sys
+        import types
+
+        calls: list[tuple[str, dict]] = []
+
+        class _Emb:
+            def __init__(self, ref, **kw):
+                calls.append((ref, kw))
+
+        monkeypatch.setattr(vindex, "_EMBEDDER", None)
+        monkeypatch.setitem(sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=_Emb))
+
+        # 1. 本地平铺目录存在 → 直接离线加载，不调 snapshot_download
+        local_dir = tmp_path / "bge-m3"
+        local_dir.mkdir()
+        monkeypatch.setattr(vindex, "embed_model_ref", lambda: str(local_dir))
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(
+            snapshot_download=lambda *a, **kw: pytest.fail("本地目录存在时不应调 snapshot_download")
+        ))
+        vindex.embedder()
+        assert calls == [(str(local_dir), {"local_files_only": True})]
+
+        # 2. 非目录 repo id → 先用 snapshot_download(..., local_files_only=True) 拿本地快照路径
+        calls.clear()
+        monkeypatch.setattr(vindex, "_EMBEDDER", None)
+        monkeypatch.setattr(vindex, "embed_model_ref", lambda: "BAAI/bge-m3")
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(
+            snapshot_download=lambda repo, **kw: "/snap/bge-m3" if kw.get("local_files_only") else None
+        ))
+        vindex.embedder()
+        assert calls == [("/snap/bge-m3", {"local_files_only": True})]
+
+        # 3. 本地缓存缺失 → 回退联网加载
+        calls.clear()
+        monkeypatch.setattr(vindex, "_EMBEDDER", None)
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(
+            snapshot_download=lambda *a, **kw: (_ for _ in ()).throw(OSError("miss"))
+        ))
+        vindex.embedder()
+        assert calls == [("BAAI/bge-m3", {})]
+        monkeypatch.setattr(vindex, "_EMBEDDER", None)
+
+    def test_vindex_glob元字符番名转义(self, tmp_path):
+        anime = "Fate [UBW]"
+        (tmp_path / f"{anime}_S01E01.json").write_text("{}", encoding="utf-8")
+        (tmp_path / f"{anime}_S01E01.npy").write_bytes(b"x")
+        (tmp_path / f"{anime}_S01E01.captions.json").write_text("{}", encoding="utf-8")
+        assert vindex.subtitle_index_count(anime, tmp_path) == 1
+        assert vindex.caption_keys(anime, tmp_path) == ["S01E01"]

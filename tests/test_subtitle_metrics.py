@@ -127,3 +127,55 @@ def test_小画幅标定不污染默认缓存(monkeypatch):
         small_px = m.cjk_px()
         assert 0 < small_px < base
     assert m.cjk_px() == base
+
+
+def test_跨进程磁盘缓存命中跳过ffmpeg且坏缓存自愈(tmp_path, monkeypatch):
+    cache_file = tmp_path / "sub_metrics.json"
+    monkeypatch.setattr(m, "_CACHE_PATH", cache_file)
+    m._cjk_px_for.cache_clear()
+    try:
+        first = m.cjk_px()
+        assert cache_file.is_file()
+        assert 44 < first < 49
+
+        # 清掉进程内 lru_cache 并禁止调用 _ink_width，验证走磁盘缓存直接命中
+        m._cjk_px_for.cache_clear()
+        with monkeypatch.context() as mp:
+            mp.setattr(m, "_ink_width", lambda *a, **kw: pytest.fail("命中磁盘缓存不应再调用 ffmpeg 标定"))
+            second = m.cjk_px()
+        assert second == first
+
+        # 缓存文件损坏时静默重建，不抛异常
+        cache_file.write_text("{corrupt json", encoding="utf-8")
+        m._cjk_px_for.cache_clear()
+        third = m.cjk_px()
+        assert third == first
+    finally:
+        m._cjk_px_for.cache_clear()
+
+
+def test_磁盘缓存多线程并发落盘无竞态且缓存键含完整维度(tmp_path, monkeypatch):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    cache_file = tmp_path / "sub_metrics_mt.json"
+    assert str(m._CACHE_UID) in m._CACHE_PATH.name
+    monkeypatch.setattr(m, "_CACHE_PATH", cache_file)
+
+    def _worker(i: int) -> None:
+        for j in range(10):
+            m._write_disk_cache(f"k-{i}-{j}", float(i * 10 + j + 1))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_worker, range(8)))
+
+    data = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert len(data) == 80
+    assert data["k-7-9"] == 80.0
+    # 缓存键必须包含字体名、画布尺寸与 ffmpeg 签名
+    key = m._disk_cache_key(render.FONT, render.FONT_SIZE)
+    assert key is not None
+    assert key.startswith(f"{render.FONT}|")
+    w, h = m._canvas_size(render.FONT_SIZE)
+    assert f"|{w}x{h}|" in key
+    assert key.endswith(f"|{m._ffmpeg_sig()}")

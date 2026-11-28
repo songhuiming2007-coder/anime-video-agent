@@ -218,11 +218,15 @@ def default_slot_ssh_host(
 
 
 def slot_control_path(slot: str = DEFAULT_SLOT) -> str:
-    """生成槽位独立的 SSH ControlPath（纯函数），避免不同实例共用同一控制套接字，且控制路径长度安全。"""
+    """生成槽位独立的 SSH ControlPath（纯函数），落 `/tmp` 并带 `%i`（UID 隔离）。
+
+    避免不同实例共用控制套接字，同时规避长用户名展开 `~/.ssh/cm-%C` 撞上 macOS `UNIX_PATH_MAX=104`
+    或无 `~/.ssh` 目录的问题。
+    """
     if slot == DEFAULT_SLOT:
-        return "~/.ssh/cm-%C"
+        return "/tmp/ava-%i-cm-%C"
     tag = slot if len(slot) <= 6 else hashlib.sha1(slot.encode("utf-8")).hexdigest()[:6]
-    return f"~/.ssh/cm-{tag}-%C"
+    return f"/tmp/ava-%i-cm-{tag}-%C"
 
 
 def _cli_scope_flags(
@@ -676,6 +680,16 @@ def merge_active_provider(local: dict, provider: str) -> dict:
     return out
 
 
+# SSH 控制连接保活与心跳参数（秒）：
+# - 直连（AutoDL）保活 120s，覆盖单次上传/推理/拉回链路中的连续 ssh/rsync 调用；
+# - cloudflared 隧道易瞬断，保活收窄到 30s，避免隧道失联后僵死主连接拖慢探测；
+# - ServerAlive 15s × 3：实例关机、休眠切网或隧道中断后 ≤45s 自动清理半开 ControlMaster。
+SSH_CONTROL_PERSIST_S = 120
+SSH_CLOUDFLARED_CONTROL_PERSIST_S = 30
+SSH_SERVER_ALIVE_INTERVAL_S = 15
+SSH_SERVER_ALIVE_COUNT_MAX = 3
+
+
 def _render_ssh_host_block(
     alias: str,
     conn: dict,
@@ -683,7 +697,7 @@ def _render_ssh_host_block(
     *,
     slot: str = DEFAULT_SLOT,
 ) -> str:
-    """生成单个 Host 块（纯函数），支持直连端口与 cloudflared ProxyCommand 及槽位独立 ControlPath。"""
+    """生成单个 Host 块（纯函数），位于 `Include ~/.ssh/config` 之前以钉死实例地址、主机密钥与槽位 ControlPath。"""
     lines = [
         f"Host {alias}",
         f"    HostName {conn['server']}",
@@ -693,13 +707,32 @@ def _render_ssh_host_block(
         lines.append("    ProxyCommand cloudflared access ssh --hostname %h")
     else:
         lines.append(f"    Port {int(conn['port'])}")
-    if conn.get("proxy_type") == "cloudflared" or slot != DEFAULT_SLOT:
-        lines.append(f"    ControlPath {slot_control_path(slot)}")
     lines.extend([
+        f"    ControlPath {slot_control_path(slot)}",
         "    StrictHostKeyChecking accept-new",
         f'    UserKnownHostsFile "{known_hosts}"',
     ])
     return "\n".join(lines) + "\n"
+
+
+def _render_ssh_mux_defaults_block(alias: str, conn: dict) -> str:
+    """生成位于 `Include ~/.ssh/config` 之后的默认复用与心跳块（纯函数）。
+
+    OpenSSH 对同名指令采用先匹配优先：放在 Include 之后可让用户在 `~/.ssh/config` 中显式覆写
+    ControlMaster / ControlPersist / ServerAliveInterval，未配置时则自动生效默认复用与心跳保活。
+    """
+    persist = (
+        SSH_CLOUDFLARED_CONTROL_PERSIST_S
+        if conn.get("proxy_type") == "cloudflared"
+        else SSH_CONTROL_PERSIST_S
+    )
+    return "\n".join([
+        f"Host {alias}",
+        "    ControlMaster auto",
+        f"    ControlPersist {persist}",
+        f"    ServerAliveInterval {SSH_SERVER_ALIVE_INTERVAL_S}",
+        f"    ServerAliveCountMax {SSH_SERVER_ALIVE_COUNT_MAX}",
+    ]) + "\n"
 
 
 def render_ssh_config(
@@ -713,20 +746,22 @@ def render_ssh_config(
 
     - `StrictHostKeyChecking accept-new`：新实例第一次连接自动记下主机密钥，之后密钥变了照常拒绝；
     - 主机密钥记在项目自己的 known_hosts，不写用户的 ~/.ssh/known_hosts；
-    - 末尾 `Match all` + `Include ~/.ssh/config`：沿用用户原有的密钥、ControlMaster 等设置。
-      ssh 对同一项取先读到的值，所以这里的 HostName / Port / User 优先于 ~/.ssh/config 里旧的 autodl 别名。
-      不加 `Match all` 的话 Include 会落进上面的 Host 块，只在主机名匹配时才生效。
+    - 中段 `Match all` + `Include ~/.ssh/config`：沿用用户原有的密钥与自定义复用设置；
+      OpenSSH 先匹配优先，前面的 HostName / Port / User / ControlPath 优先于 ~/.ssh/config，
+      后面的默认 ControlMaster / ControlPersist / ServerAlive 仅在用户未显式配置时兜底生效。
     """
     return (
         "# 由 python -m pipeline.cloud connect 生成（D102），换实例时重写；手改会被下次 connect 覆盖\n"
         + _render_ssh_host_block(alias, conn, known_hosts, slot=slot)
-        + "\nMatch all\nInclude ~/.ssh/config\n"
+        + "\nMatch all\nInclude ~/.ssh/config\n\n"
+        + _render_ssh_mux_defaults_block(alias, conn)
     )
 
 
 def render_all_ssh_configs(cfg_global: dict, cfg_local: dict, known_hosts: Path) -> str:
     """为所有已配置连接的 SSH 后端与槽位（autodl / colab）生成多 Host 块 `ssh_config`（纯函数）。"""
     blocks: list[str] = []
+    mux_blocks: list[str] = []
     seen_aliases: set[str] = set()
     for p in ("autodl", "colab"):
         for slot in list_configured_slots(cfg_local, p):
@@ -740,12 +775,14 @@ def render_all_ssh_configs(cfg_global: dict, cfg_local: dict, known_hosts: Path)
                 continue
             seen_aliases.add(alias)
             blocks.append(_render_ssh_host_block(alias, prof, known_hosts, slot=slot))
+            mux_blocks.append(_render_ssh_mux_defaults_block(alias, prof))
     if not blocks:
         return ""
     return (
         "# 由 python -m pipeline.cloud connect 生成（D102 / Colab），换实例时重写；手改会被下次 connect 覆盖\n"
         + "\n".join(blocks)
-        + "\nMatch all\nInclude ~/.ssh/config\n"
+        + "\nMatch all\nInclude ~/.ssh/config\n\n"
+        + "\n".join(mux_blocks)
     )
 
 
@@ -2528,6 +2565,19 @@ def forget_known_host(conn: dict) -> None:
                        capture_output=True, text=True)
 
 
+def _close_ssh_control_master(host: str) -> None:
+    """主动退出指定别名的旧 ControlMaster 复用连接，防止换机/停机后复用到半开旧套接字。"""
+    if not ssh_config_file().is_file():
+        return
+    try:
+        subprocess.run(
+            [*ssh_base(), "-O", "exit", host],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _reserve_auto_slot(cfg_global: dict, provider: str) -> tuple[str, Path]:
     """在状态锁下原子分配并占位首个空闲槽位，防止并发 `--slot auto` 撞到同一槽位。"""
     lock_dir = _state_lock_dir()
@@ -2634,6 +2684,7 @@ def _apply_ssh_profile_connection(
         merged = merge_profile_connection(latest_local, provider, conn, ssh_host=resolved_alias, slot=norm_slot)
         paths.atomic_write(f_local, json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
         ssh_config_file().parent.mkdir(parents=True, exist_ok=True)
+        _close_ssh_control_master(resolved_alias)
         forget_known_host(conn)
         rendered = (
             render_all_ssh_configs(cfg_global, merged, known_hosts_file())
@@ -3865,6 +3916,7 @@ def cmd_down(args: argparse.Namespace) -> int:
                 check=False,
                 timeout=15,
             )
+            _close_ssh_control_master(host)
             print("[*] 正在验证 Colab 隧道是否已断开（最多等 60 秒）...")
             for _ in range(12):
                 time.sleep(5)
@@ -3876,6 +3928,7 @@ def cmd_down(args: argparse.Namespace) -> int:
 
         print("[*] 正在发送远端停机指令...")
         _ssh("nohup /usr/bin/shutdown -h now >/dev/null 2>&1 & sleep 1", host=host, check=False, timeout=15)
+        _close_ssh_control_master(host)
 
         print("[*] 正在验证实例是否真的停止响应（最多等 60 秒）...")
         for _ in range(12):

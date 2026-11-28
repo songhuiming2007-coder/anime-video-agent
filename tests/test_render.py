@@ -795,3 +795,286 @@ class TestRenderSubtitleFailFast:
         msg = str(exc_info.value)
         assert "字幕不超宽" in msg and "1-1" in msg
         assert "字幕每卡一行" in msg and "82-2" in msg and "Music Synopsis" in msg
+
+
+class TestEncoderAndProbes:
+    """2026-11 渲染性能优化护栏：硬件编码安全回退、单次 JSON ffprobe 与单遍 HUD 净顶条。"""
+
+    def test_auto模式随硬件探测结果切换且保留限幅色彩(self, monkeypatch):
+        monkeypatch.setattr(render, "VT_QUALITY", "75")
+        monkeypatch.setattr(render, "PRESET", "faster")
+        monkeypatch.setattr(render, "CRF", "18")
+
+        monkeypatch.setattr(render, "_videotoolbox_available", lambda: True)
+        vt = render.final_video_encoder_args("auto")
+        assert vt[:2] == ["-c:v", "h264_videotoolbox"]
+        assert "-color_range" in vt and vt[vt.index("-color_range") + 1] == "tv"
+        assert "-pix_fmt" in vt and vt[vt.index("-pix_fmt") + 1] == "yuv420p"
+        assert "-spatial_aq" in vt and vt[vt.index("-spatial_aq") + 1] == "1"
+
+        monkeypatch.setattr(render, "_videotoolbox_available", lambda: False)
+        sw = render.final_video_encoder_args("auto")
+        assert sw == ["-c:v", "libx264", "-preset", "faster", "-crf", "18", "-pix_fmt", "yuv420p"]
+
+    def test_显式libx264不触发vt探测(self, monkeypatch):
+        monkeypatch.setattr(render, "_videotoolbox_available",
+                            lambda: pytest.fail("libx264 模式不应探测 VideoToolbox"))
+        sw = render.final_video_encoder_args("libx264")
+        assert sw[:2] == ["-c:v", "libx264"]
+
+    def test_显式videotoolbox不可用报错且非法值报错(self, monkeypatch):
+        monkeypatch.setattr(render, "_videotoolbox_available", lambda: False)
+        with pytest.raises(SystemExit, match="h264_videotoolbox"):
+            render.final_video_encoder_args("videotoolbox")
+        with pytest.raises(SystemExit, match="不支持"):
+            render.final_video_encoder_args("nvenc")
+
+    def test_vt_quality非法值直接报配置错且不干扰硬件探测(self, monkeypatch):
+        render._videotoolbox_available.cache_clear()
+        seen_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            seen_cmds.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(render.sys, "platform", "darwin")
+        monkeypatch.setattr(render.subprocess, "run", fake_run)
+        monkeypatch.setattr(render, "VT_QUALITY", "999")
+        try:
+            assert render._videotoolbox_available() is True
+            assert seen_cmds and seen_cmds[0][seen_cmds[0].index("-q:v") + 1] == render._VT_PROBE_QUALITY
+            with pytest.raises(SystemExit, match="vt_quality"):
+                render.final_video_encoder_args("videotoolbox")
+            with pytest.raises(SystemExit, match="vt_quality"):
+                render.final_video_encoder_args("auto")
+            monkeypatch.setattr(render, "VT_QUALITY", "bad")
+            with pytest.raises(SystemExit, match="vt_quality"):
+                render.final_video_encoder_args("videotoolbox")
+            # 显式 libx264 不受 vt_quality 影响
+            assert render.final_video_encoder_args("libx264")[:2] == ["-c:v", "libx264"]
+        finally:
+            render._videotoolbox_available.cache_clear()
+
+    def test_脏流帧率与时长防护(self, tmp_path, monkeypatch):
+        for bad_fps in ("0/0", "0", "-24", "24/0", "N/A", "1/2/3"):
+            with pytest.raises(ValueError):
+                render._fps_to_frame_time(bad_fps)
+
+        monkeypatch.setattr(
+            render.subprocess, "run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                a[0], 0,
+                stdout=json.dumps({"format": {"format_name": "mp4", "duration": "N/A"}, "streams": []}),
+                stderr="",
+            ),
+        )
+        with pytest.raises(SystemExit, match="时长非法"):
+            render._probe_source(tmp_path / "bad.mp4")
+
+        monkeypatch.setattr(
+            render.subprocess, "run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                a[0], 0,
+                stdout=json.dumps({
+                    "format": {"format_name": "mp4", "duration": "5.0"},
+                    "streams": [{"r_frame_rate": "0/0"}],
+                }),
+                stderr="",
+            ),
+        )
+        with pytest.raises(SystemExit, match="帧率非法"):
+            render._probe_source(tmp_path / "badfps.mp4")
+
+    def test_still_frames相对路径src_cache规范化命中(self, tmp_path: Path, monkeypatch):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        fake_src = sub / "clip.mp4"
+        fake_src.write_bytes(b"stub")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(render, "_source_path", lambda ep, tag: fake_src.resolve())
+        monkeypatch.setattr(
+            render, "_probe_source",
+            lambda p: pytest.fail("规范化后应命中 src_cache，不应重复 ffprobe"),
+        )
+        cut_infos: list[tuple[float, float, float] | None] = []
+        monkeypatch.setattr(
+            render, "cut",
+            lambda clip, dest, slow=1.0, frames=None, src_info=None: cut_infos.append(src_info),
+        )
+        plan = {
+            "segments": [{"index": 1, "start": 0.0, "dur": 5.0}],
+            "blocks": [{"kind": "fg", "start": 5.0, "dur": 4.0, "visual": "S01E01 0:00"}],
+        }
+        monkeypatch.setattr(render, "music_visual_slots", lambda p: [(5.0, 4.0, "S01E01 0:00")])
+        cache = {"sub/clip.mp4": (20.0, 1.0 / 24.0, 0.0)}
+        out = render._still_frames(tmp_path, plan, {}, tmp_path, workers=2, src_cache=cache)
+        assert len(out) == 1
+        assert cut_infos == [(20.0, 1.0 / 24.0, 0.0)]
+
+    def test_音乐期视频前置失败立即触发cancel且不阻塞异常传播(self, tmp_path: Path, monkeypatch):
+        import time as _time
+        from pipeline import chapters as chapters_mod, music as music_mod
+
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "01-topic.md").write_text("类型: 试听\n", encoding="utf-8")
+        (ep / "02-script.md").write_text("# test\n", encoding="utf-8")
+        wav = ep / "03-audio" / "01.wav"
+        wav.write_bytes(b"stub")
+        src = tmp_path / "src.mp4"
+        src.write_bytes(b"stub")
+        man = {"segments": [{"index": 1, "file": "01.wav", "duration": 2.0, "text": "一句", "sentences": None}]}
+        plan = {"segments": [{"index": 1, "status": "ok", "duration": 2.0, "text": "一句",
+                              "clips": [{"source": str(src), "start": 0.0, "dur": 2.0}]}]}
+        (ep / "03-audio" / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+        (ep / "04-clips.approved.json").write_text(json.dumps(plan), encoding="utf-8")
+        mplan = {"segments": [{"index": 1, "start": 0.0, "dur": 2.0}], "blocks": [], "total_duration": 2.0}
+
+        monkeypatch.setattr(render, "verify_script_vo_hash", lambda *a, **kw: None)
+        monkeypatch.setattr(render, "verify_alignment", lambda *a, **kw: [])
+        monkeypatch.setattr(render, "verify_subtitles", lambda *a, **kw: None)
+        monkeypatch.setattr(render, "_maybe_music_plan", lambda *a, **kw: mplan)
+        monkeypatch.setattr(render, "music_visual_slots", lambda *a, **kw: [])
+        monkeypatch.setattr(render, "check_tiling", lambda *a, **kw: None)
+        monkeypatch.setattr(render, "_probe_source", lambda *a, **kw: (10.0, 1.0 / 24.0, 0.0))
+        monkeypatch.setattr(render, "cut", lambda clip, dest, **kw: dest.write_bytes(b"c"))
+        monkeypatch.setattr(music_mod, "parse_script_music", lambda *a, **kw: [])
+        monkeypatch.setattr(music_mod, "bgm_source_issue", lambda *a, **kw: None)
+        monkeypatch.setattr(music_mod, "music_gaps", lambda *a, **kw: [])
+        monkeypatch.setattr(chapters_mod, "parse_script_chapters", lambda *a, **kw: None)
+        monkeypatch.setattr(chapters_mod, "collect_music_hud_spans", lambda *a, **kw: ())
+
+        cancel_seen = []
+
+        def slow_audio(*a, cancel=None, **kw):
+            cancel_seen.append(cancel)
+            if cancel is not None:
+                cancel.wait(timeout=5.0)
+            return tmp_path / "voice.wav", {}
+
+        monkeypatch.setattr(render, "_prepare_audio", slow_audio)
+        monkeypatch.setattr(render, "_still_frames", lambda *a, **kw: (_ for _ in ()).throw(SystemExit("FAIL still boom")))
+
+        t0 = _time.monotonic()
+        with pytest.raises(SystemExit, match="still boom"):
+            render.run(ep)
+        elapsed = _time.monotonic() - t0
+        assert elapsed < 1.0, f"视频失败后不应等待后台音频线程：{elapsed:.2f}s"
+        assert cancel_seen and cancel_seen[0] is not None and cancel_seen[0].is_set()
+
+    def test_非darwin平台vt探测直接返回False(self, monkeypatch):
+        render._videotoolbox_available.cache_clear()
+        monkeypatch.setattr(render.sys, "platform", "linux")
+        monkeypatch.setattr(render.subprocess, "run",
+                            lambda *a, **kw: pytest.fail("非 macOS 不应拉起 ffmpeg 探测 VT"))
+        try:
+            assert render._videotoolbox_available() is False
+        finally:
+            render._videotoolbox_available.cache_clear()
+
+    def test_write_final带extra_args失败清partial保留旧成片(self, tmp_path, monkeypatch):
+        (tmp_path / render.FINAL).write_bytes(b"old")
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            (tmp_path / render.FINAL_PART).write_bytes(b"half")
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(render.subprocess, "run", fake_run)
+        with pytest.raises(subprocess.CalledProcessError):
+            render._write_final(tmp_path, tmp_path, ["ffmpeg"], extra_args=["-map", "[hout]", "top.mp4"])
+        assert seen and seen[0][-3:] == ["-map", "[hout]", "top.mp4"]
+        assert (tmp_path / render.FINAL).read_bytes() == b"old"
+        assert not (tmp_path / render.FINAL_PART).exists()
+
+    @needs_ffmpeg
+    def test_probe_source与probe_cut_result等价旧函数且拒收静态图(self, tmp_path: Path):
+        mp4 = tmp_path / "v.mp4"
+        _ff("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30000/1001:duration=1.5",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1.8",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(mp4))
+        dur, ft, gap = render._probe_source(mp4)
+        ref_dur = render.duration(mp4)
+        assert dur == pytest.approx(ref_dur, abs=1e-6)
+        assert ft == pytest.approx(render.frame_time(mp4), abs=1e-6)
+        assert gap == pytest.approx(render._video_tail_gap(mp4, ref_dur), abs=1e-6)
+        assert gap > 0.1
+
+        n_pkt, cut_dur = render._probe_cut_result(mp4)
+        assert n_pkt == render.frame_count(mp4)
+        assert cut_dur == pytest.approx(ref_dur, abs=1e-6)
+
+        img = tmp_path / "still.png"
+        _ff("-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1", str(img))
+        with pytest.raises(SystemExit, match="静态图片"):
+            render._probe_source(img)
+        with pytest.raises(SystemExit, match="静态图片"):
+            render._probe_cut_result(img)
+
+    @needs_ffmpeg
+    def test_单遍合成同时落盘05_final与hud_clean_top_异源拼接零丢包(self, tmp_path: Path, monkeypatch):
+        """端到端真实产物护栏（B1）：异源 concat（tv/yuv420p 与 pc/yuvj420p 切换）+ HUD 单遍 split=2
+        必须把 loudnorm 放在独立 -af 链；若错塞进视频 -filter_complex，libavfilter 触发 reinit_filters
+        会静默丢弃 ~3s/次音频包，本测试直接核查真实产物 AAC 包数与包时长连续性。"""
+        from pipeline import chapters as chapters_mod, qc
+
+        monkeypatch.setattr(render, "W", 160)
+        monkeypatch.setattr(render, "H", 90)
+        monkeypatch.setattr(render, "MARGIN_LR", 10)
+        monkeypatch.setattr(render, "MARGIN_V", 10)
+        monkeypatch.setattr(render, "FONT_SIZE", 12)
+        monkeypatch.setattr(render, "ENCODER", "libx264")
+        monkeypatch.setattr(render, "PRESET", "ultrafast")
+        monkeypatch.setattr(
+            chapters_mod, "collect_music_hud_spans",
+            lambda mplan, bplan, total: (chapters_mod.MusicHudSpan(title="Test Track", start=0.0, end=total),),
+        )
+
+        # 构造两种不同 color_range/pix_fmt 的真实源片（tv/yuv420p 与 pc/yuvj420p），
+        # 复现多源番剧/实拍/定格拼接时触发 libavfilter reinit_filters 的真实边界。
+        src_tv = tmp_path / "src_tv.mp4"
+        src_pc = tmp_path / "src_pc.mp4"
+        _ff("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24000/1001:duration=6.0",
+            "-vf", "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p",
+            "-c:v", "libx264", "-preset", "ultrafast", str(src_tv))
+        _ff("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24000/1001:duration=6.0",
+            "-vf", "setparams=range=pc:color_primaries=smpte170m:color_trc=smpte170m:colorspace=smpte170m,format=yuvj420p",
+            "-c:v", "libx264", "-preset", "ultrafast", str(src_pc))
+        ep = tmp_path / "ep"
+        (ep / "03-audio").mkdir(parents=True)
+        (ep / "01-topic.md").write_text("类型: 杂谈\n", encoding="utf-8")
+        man, segs = [], []
+        # 3 段 × 4.5s = 13.5s（每段 > 3s 以便 loudnorm 缓冲写满并暴露 reinit 丢包）
+        for i, (src, d) in enumerate(((src_tv, 4.5), (src_pc, 4.5), (src_tv, 4.5)), 1):
+            wav = ep / "03-audio" / f"{i:02d}.wav"
+            _ff("-f", "lavfi", "-i", f"sine=frequency={260 + 40 * i}:sample_rate=48000", "-t", str(d),
+                "-ac", "1", str(wav))
+            real_d = render.duration(wav)
+            man.append({"index": i, "file": wav.name, "duration": real_d, "text": f"第{i}段。",
+                        "sentences": None})
+            segs.append({"index": i, "status": "ok", "duration": real_d, "text": f"第{i}段。",
+                         "clips": [{"source": str(src), "start": 0.0, "dur": real_d}]})
+        (ep / "03-audio" / "manifest.json").write_text(json.dumps({"segments": man}), encoding="utf-8")
+        (ep / "04-clips.approved.json").write_text(json.dumps({"segments": segs}), encoding="utf-8")
+
+        out = render.run(ep)
+        clean_top = ep / "_agent" / "hud_clean_top.mp4"
+        assert out.is_file() and clean_top.is_file()
+        total = sum(m["duration"] for m in man)
+        want_frames = render.span_frames(0.0, total)
+        assert render.frame_count(clean_top) == want_frames
+        dims = render._ffprobe(clean_top, "stream=width,height", "v:0")
+        assert dims == f"160,{chapters_mod.hud_strip_height(90)}"
+
+        # 真实产物音频包完整性断言：0 处 PTS 断洞，AAC 包覆盖时长与容器时长一致
+        a_info = json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=sample_rate,nb_frames,duration", "-of", "json", str(out)],
+            capture_output=True, text=True, check=True,
+        ).stdout)["streams"][0]
+        adur = float(a_info["duration"])
+        pkt_dur = int(a_info["nb_frames"]) * 1024 / int(a_info["sample_rate"])
+        assert adur - pkt_dur < 0.2, f"疑似 loudnorm 重建丢包：容器 {adur:.3f}s，包覆盖仅 {pkt_dur:.3f}s"
+        pkt_chk = qc._audio_packet_check(out, adur)
+        assert pkt_chk is not None and pkt_chk.ok is True

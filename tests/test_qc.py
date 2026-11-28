@@ -315,3 +315,138 @@ class TestAssemblyLedger:
 
     def test_无账本_返回None(self, tmp_path):
         assert qc.assembly_ledger(tmp_path) is None
+
+
+class TestQcPerfMerging:
+    """2026-11 质检提速护栏：音频单遍 `-vn` + `asplit=2`，源片黑帧按间隙聚类避免白解整段。"""
+
+    def test_音频扫描带vn且仅跑两次主ffmpeg(self, monkeypatch, tmp_path):
+        import subprocess as sp
+
+        video = tmp_path / "05-final.mp4"
+        video.write_text("stub", encoding="utf-8")
+        ff_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "ffprobe":
+                return sp.CompletedProcess(cmd, 0, stdout="120.0\n", stderr="")
+            ff_cmds.append(cmd)
+            if any("loudnorm" in a for a in cmd):
+                return sp.CompletedProcess(
+                    cmd, 0, stdout="",
+                    stderr='{"input_i": "-16.0", "input_tp": "-1.5"}\n',
+                )
+            return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(qc.subprocess, "run", fake_run)
+        checks = qc.check(video)
+        assert len(ff_cmds) == 2
+        aud_cmd = next(c for c in ff_cmds if any("loudnorm" in a for a in c))
+        vid_cmd = next(c for c in ff_cmds if any("blackdetect" in a for a in c))
+        assert "-vn" in aud_cmd
+        fc = aud_cmd[aud_cmd.index("-filter_complex") + 1]
+        assert "asplit=2" in fc and "loudnorm" in fc and "silencedetect" in fc
+        assert "-an" in vid_cmd
+        assert next(c for c in checks if "响度" in c.name).ok
+        assert next(c for c in checks if "静音" in c.name).ok
+
+    def test_黑帧窗口聚类_近邻合并_远距拆开_下界夹零(self):
+        # 间距 4s (≤ BLACK_CLUSTER_GAP) 合并；间距 317s 拆成两段；起点近 0 夹到 0.0
+        spans = [
+            _span("a.mkv", 0.1, 0.8, 0.1, 0.8, 1, 0),
+            _span("a.mkv", 314.0, 315.0, 10.0, 11.0, 2, 1),
+            _span("a.mkv", 318.0, 319.0, 14.0, 15.0, 3, 2),
+            _span("a.mkv", 631.0, 632.0, 50.0, 51.0, 4, 3),
+        ]
+        wins = qc._cluster_black_windows(spans)
+        assert len(wins) == 3
+        assert wins[0][0] == 0.0
+        assert wins[1][0] < 314.0 and wins[1][1] > 319.0
+        assert wins[2][0] > 629.0 and wins[2][1] > 632.0
+
+    def test_probe_source_blacks部分失败时保留成功覆盖并记录错误(self, monkeypatch):
+        def fake_run(cmd):
+            src = cmd[cmd.index("-i") + 1]
+            if src == "bad.mkv":
+                return "decode error", 1
+            return "black_start:0.0 black_end:3.0", 0
+
+        monkeypatch.setattr(qc, "_run", fake_run)
+        s_ok = _span("ok.mkv", 10.0, 11.0, 1.0, 2.0, 1, 0)
+        s_bad = _span("bad.mkv", 20.0, 21.0, 5.0, 6.0, 2, 1)
+        covered, errs = qc._probe_source_blacks({"ok.mkv": [s_ok], "bad.mkv": [s_bad]})
+        assert covered == {s_ok}
+        assert len(errs) == 1 and "bad.mkv" in errs[0]
+
+    def test_真实视频_asplit单遍响度等价且音频包连续门禁抓出PTS断洞(self, tmp_path):
+        import json as _json
+        import re as _re
+        import shutil
+        import subprocess as sp
+
+        if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+            pytest.skip("需要 ffmpeg/ffprobe")
+
+        # 1. 正常短片：asplit=2 单遍 loudnorm 数值与独立 loudnorm 一致，且 _audio_packet_check 判 PASS
+        good = tmp_path / "good.mp4"
+        sp.run([
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=4",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(good),
+        ], check=True, capture_output=True)
+
+        solo_err, solo_rc = qc._run([
+            "ffmpeg", "-nostdin", "-i", str(good), "-vn",
+            "-af", "loudnorm=print_format=json", "-f", "null", "-",
+        ])
+        split_err, split_rc = qc._run([
+            "ffmpeg", "-nostdin", "-i", str(good), "-vn",
+            "-filter_complex",
+            f"[0:a]asplit=2[a1][a2];[a1]loudnorm=print_format=json[o1];"
+            f"[a2]silencedetect=n=-45dB:d={qc.SILENCE_MAX}[o2]",
+            "-map", "[o1]", "-map", "[o2]", "-f", "null", "-",
+        ])
+        assert solo_rc == 0 and split_rc == 0
+        d_solo = _json.loads(_re.search(r"\{[^{}]*input_i[^{}]*\}", solo_err, _re.S).group(0))
+        d_split = _json.loads(_re.search(r"\{[^{}]*input_i[^{}]*\}", split_err, _re.S).group(0))
+        assert float(d_split["input_i"]) == pytest.approx(float(d_solo["input_i"]), abs=0.05)
+        assert float(d_split["input_tp"]) == pytest.approx(float(d_solo["input_tp"]), abs=0.05)
+
+        good_chk = qc._audio_packet_check(good, qc._duration(good, "a:0"))
+        assert good_chk is not None and good_chk.ok is True
+
+        # 2. 复现 B1 断洞成片：异源 concat + loudnorm 误入视频 -filter_complex 静默丢包，门禁必须判 FAIL
+        s1, s2, s3 = tmp_path / "s1.mp4", tmp_path / "s2.mp4", tmp_path / "s3.mp4"
+        sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=24:d=4",
+                "-vf", "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", str(s1)], check=True, capture_output=True)
+        sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=24:d=4",
+                "-vf", "setparams=range=pc:color_primaries=smpte170m:color_trc=smpte170m:colorspace=smpte170m,format=yuvj420p",
+                "-c:v", "libx264", "-preset", "ultrafast", str(s2)], check=True, capture_output=True)
+        sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=24:d=4",
+                "-vf", "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", str(s3)], check=True, capture_output=True)
+        (tmp_path / "cat.txt").write_text("file s1.mp4\nfile s2.mp4\nfile s3.mp4\n", encoding="utf-8")
+        cat_vid = tmp_path / "cat.mp4"
+        sp.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", "cat.txt",
+                "-c", "copy", str(cat_vid)], check=True, capture_output=True, cwd=tmp_path)
+        wav = tmp_path / "v.wav"
+        sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:r=48000:d=12",
+                "-ac", "1", "-c:a", "pcm_s16le", str(wav)], check=True, capture_output=True)
+        m_err, _ = qc._run(["ffmpeg", "-nostdin", "-i", str(wav), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"])
+        ld = _json.loads(_re.search(r"\{[^{}]*input_i[^{}]*\}", m_err, _re.S).group(0))
+        ln = (f"loudnorm=I=-16:TP=-1.5:LRA=11:linear=true:measured_I={ld['input_i']}"
+              f":measured_TP={ld['input_tp']}:measured_LRA={ld['input_lra']}"
+              f":measured_thresh={ld['input_thresh']}:offset={ld['target_offset']}")
+        broken = tmp_path / "broken.mp4"
+        sp.run([
+            "ffmpeg", "-y", "-v", "error", "-i", str(cat_vid), "-i", str(wav),
+            "-filter_complex", f"[0:v:0]split=2[vm][vh];[vm]null[vo];[vh]crop=64:16:0:0[ho];[1:a:0]{ln}[ao]",
+            "-map", "[vo]", "-map", "[ao]", "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-shortest", str(broken),
+            "-map", "[ho]", "-an", "-c:v", "libx264", "-preset", "ultrafast", str(tmp_path / "hud.mp4"),
+        ], check=True, capture_output=True)
+        bad_chk = qc._audio_packet_check(broken, qc._duration(broken, "a:0"))
+        assert bad_chk is not None and bad_chk.ok is False and "缺失" in bad_chk.detail

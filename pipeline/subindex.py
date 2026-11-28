@@ -10,18 +10,22 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
 from dataclasses import dataclass, asdict
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import paths  # 必须在 sentence_transformers 之前：把模型缓存钉到 SSD
 
 import numpy as np
 import pysubs2
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 # 2026-07-28 矩阵评测结论：small→base 是命中率的主要变量，切分方式次要。
 # bge-small 窗口2 = 75% / bge-base 窗口2 = 100%（Top-1，8 条查询）。不要为省 300MB 退回 small。
@@ -260,10 +264,36 @@ def parse(path: Path, anime: str, season: int, episode: int) -> list[Unit]:
 _model: SentenceTransformer | None = None
 
 
+def _load_sentence_transformer(model_name: str) -> SentenceTransformer:
+    """延迟导入并优先走本地 snapshot 目录离线加载，彻底避免向 HF Hub 发起在线校验。
+
+    sentence-transformers v5 仅传 `local_files_only=True` 给 repo id 时仍会调一次 `model_info()`；
+    先用 `snapshot_download(..., local_files_only=True)` 解析出本地快照目录再加载，实测 0 次 HTTP 请求。
+    仅在本地缓存缺失时回退联网下载（新机器 / 首次运行）。
+    """
+    from sentence_transformers import SentenceTransformer
+
+    local_ref: str | None = None
+    if Path(model_name).is_dir():
+        local_ref = model_name
+    else:
+        try:
+            from huggingface_hub import snapshot_download
+            local_ref = snapshot_download(model_name, local_files_only=True)
+        except (OSError, ValueError):
+            local_ref = None
+    if local_ref is not None:
+        try:
+            return SentenceTransformer(local_ref, local_files_only=True)
+        except (OSError, ValueError):
+            pass
+    return SentenceTransformer(model_name)
+
+
 def model() -> SentenceTransformer:
     global _model
     if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
+        _model = _load_sentence_transformer(MODEL_NAME)
     return _model
 
 
@@ -338,6 +368,25 @@ def build(sub_path: Path, anime: str, season: int, episode: int, out_dir: Path) 
     return len(units)
 
 
+def _candidate_index_files(index_dir: Path, allow: set[str] | None) -> list[Path]:
+    """按番名前缀 `<番>_*.json` 预筛索引文件，避免全目录遍历解析他番 JSON。
+
+    实测 189 个索引文件（10.9 MB）加载单番由 346 ms 降至 10 ms。对番名做 `glob.escape`
+    避免含 `[ ] * ?` 的番名漏匹配；`allow` 中只要任意一部番前缀命中为空（如非规范命名的
+    历史/测试夹具），立即回退全目录 `*.json` 扫描，防止跨番混剪时静默丢弃整部番；
+    下游仍按 `units[0]["anime"]` 二次核验。
+    """
+    if allow is None:
+        return sorted(index_dir.glob("*.json"))
+    matched: set[Path] = set()
+    for a in allow:
+        hits = list(index_dir.glob(f"{glob.escape(a)}_*.json"))
+        if not hits:
+            return sorted(index_dir.glob("*.json"))
+        matched.update(hits)
+    return sorted(matched)
+
+
 def load_all(index_dir: Path, anime: str | list[str] | None = None) -> tuple[np.ndarray, list[Unit]]:
     """加载分集索引。这个量级（万级）暴力余弦即可，无需向量库。
 
@@ -359,8 +408,9 @@ def load_all(index_dir: Path, anime: str | list[str] | None = None) -> tuple[np.
     units[0] 都能看出来，不值得为它跑整套校验。
     """
     allow = None if anime is None else ({anime} if isinstance(anime, str) else set(anime))
+    rev = paths.model_revision(MODEL_NAME)
     vecs, units = [], []
-    for meta_path in sorted(index_dir.glob("*.json")):
+    for meta_path in _candidate_index_files(index_dir, allow):
         vec_path = meta_path.with_suffix(".npy")
         if not vec_path.exists():
             continue
@@ -368,7 +418,7 @@ def load_all(index_dir: Path, anime: str | list[str] | None = None) -> tuple[np.
         rows_peek = d if isinstance(d, list) else d.get("units", [])
         if allow is not None and (not rows_peek or rows_peek[0].get("anime") not in allow):
             continue
-        rows = _check(d, meta_path)
+        rows = _check(d, meta_path, rev=rev)
         v = np.load(vec_path)
         if v.shape[0] != len(rows):
             # 多半是重建时在 .npy 与 .json 两步写之间被打断：两份文件都在、成对判据放行，而下标从这一集起整体错位，检索命中会静默指向别的台词 / 镜头
@@ -387,7 +437,10 @@ def load_all(index_dir: Path, anime: str | list[str] | None = None) -> tuple[np.
     return np.vstack(vecs), units
 
 
-def _check(d, path: Path) -> list[dict]:
+_UNSET = object()
+
+
+def _check(d, path: Path, rev: str | None | object = _UNSET) -> list[dict]:
     """校验元信息并取出台词单元。**对不上直接失败，不许继续。**
 
     旧格式（裸列表，没有模型身份）也在这里拦下：它建的时候用的什么模型无从得知，
@@ -404,10 +457,10 @@ def _check(d, path: Path) -> list[dict]:
         raise SystemExit(
             f"FAIL {path.name} 建索引时用的是 {m.get('model_id')}，当前是 {MODEL_NAME}。\n"
             f"     两个模型的向量空间不可比，重建索引再用")
-    rev = paths.model_revision(MODEL_NAME)
-    if rev and m.get("revision") and m["revision"] != rev:
+    cur_rev = paths.model_revision(MODEL_NAME) if rev is _UNSET else rev
+    if cur_rev and m.get("revision") and m["revision"] != cur_rev:
         raise SystemExit(
-            f"FAIL {path.name} 的模型版本是 {m['revision'][:12]}，本机缓存的是 {rev[:12]}。\n"
+            f"FAIL {path.name} 的模型版本是 {m['revision'][:12]}，本机缓存的是 {cur_rev[:12]}。\n"
             f"     换 backbone 常常不改维度，分数照样算得出来，所以这里必须硬失败。重建索引")
     return d["units"]
 
@@ -419,7 +472,7 @@ def load_units(index_dir: Path, anime: str) -> list[Unit]:
     那套校验管的是「向量与当前模型兼不兼容」，这里根本不碰向量。
     """
     units: list[Unit] = []
-    for meta_path in sorted(index_dir.glob("*.json")):
+    for meta_path in _candidate_index_files(index_dir, {anime}):
         if not meta_path.with_suffix(".npy").exists():
             continue
         d = json.loads(meta_path.read_text(encoding="utf-8"))

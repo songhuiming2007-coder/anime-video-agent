@@ -9,8 +9,11 @@
     "width": 1920,
     "height": 1080,
     "fps": "24000/1001",
+    "encoder": "auto",
+    "vt_quality": "75",
     "crf": "18",
-    "preset": "medium",
+    "preset": "faster",
+    "_encoder_note": "最终合成编码器：auto 在 macOS 且本机 h264_videotoolbox 可用时走硬件编码（限幅 yuv420p），非 macOS 或无硬件时自动回退 libx264（faster 相对 medium 提速约 39%）。vt_quality 需为 1–100 整数：默认 75 在 2D 番剧上体积与 crf=18 接近，在实拍/Live/高颗粒题材上码率会偏高，可按需调至 65–68 或显式设 encoder 为 libx264。",
     "cut_preset": "ultrafast",
     "cut_crf": "12",
     "_cut_note": "中间临时切片（render.cut 与 _still_frames）的编码参数。中间片拼成 video.mp4 后在最终合成时还要经 preset/crf 压一次字幕层；两处共用同一组参数保证 concat -c copy 流签名一致。"

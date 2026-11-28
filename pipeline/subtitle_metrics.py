@@ -16,14 +16,84 @@ render 的 `line_width` 是折行约定：一个汉字记 1 格（= 字号 54 px
 from __future__ import annotations
 
 import functools
+import json
+import os
+import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
-from . import render
+from . import paths, render
 
 # 标定用的参照串：同一个汉字 20 个与 40 个，墨迹宽之差 = 20 个汉字的步进宽，两端字侧留白相消
 _REF = "一"
+
+# 跨进程持久化标定缓存（按 UID 隔离避免多用户 /tmp 权限冲突）：
+# 键涵盖 font_name / 解析出的字体文件与 mtime+size / font_size / 画布尺寸 / ffmpeg 二进制签名，
+# 避免每次独立子进程（check_script / render / qc）重复渲染两张 3840×1080 libass PNG（省 ~0.27 s/次）。
+_CACHE_UID = os.getuid() if hasattr(os, "getuid") else 0
+_CACHE_PATH = Path(tempfile.gettempdir()) / f"ava_subtitle_metrics_v1_{_CACHE_UID}.json"
+_CACHE_LOCK = threading.Lock()
+
+
+def _canvas_size(font_size: int) -> tuple[int, int]:
+    """标定画布必须够宽够高（小画幅测试夹具把 render.W/H 缩到 160x90 时也不截断 40 个参照汉字）。"""
+    return max(render.W * 2, font_size * 50), max(render.H, font_size * 4)
+
+
+@functools.lru_cache(maxsize=1)
+def _ffmpeg_sig() -> str:
+    """用 ffmpeg 可执行文件的真实路径 + mtime/size 标识版本，避免升版后旧标定缓存不失效且不额外拉子进程。"""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return "missing"
+    try:
+        rp = Path(exe).resolve()
+        st = os.stat(rp)
+        return f"{rp}|{st.st_mtime_ns}|{st.st_size}"
+    except OSError:
+        return exe
+
+
+def _disk_cache_key(font_name: str, font_size: int) -> str | None:
+    path, idx = _font_file_for(font_name)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    canvas_w, canvas_h = _canvas_size(font_size)
+    return (
+        f"{font_name}|{path}|{idx}|{st.st_mtime_ns}|{st.st_size}"
+        f"|{font_size}|{canvas_w}x{canvas_h}|{_ffmpeg_sig()}"
+    )
+
+
+def _read_disk_cache(key: str) -> float | None:
+    try:
+        data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        val = data.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _write_disk_cache(key: str, value: float) -> None:
+    with _CACHE_LOCK:
+        try:
+            try:
+                data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, ValueError):
+                data = {}
+            data[key] = value
+            # 复用 paths.atomic_write：临时文件名含 pid + thread_ident，消除同进程多线程写竞态
+            paths.atomic_write(_CACHE_PATH, json.dumps(data, ensure_ascii=False))
+        except OSError:
+            pass
 
 
 @functools.lru_cache(maxsize=8)
@@ -66,9 +136,7 @@ def _ink_width(
     from PIL import Image
     fname = font_name or render.FONT
     fsize = font_size or render.FONT_SIZE
-    # 标定画布必须够宽够高（即使小画幅测试夹具把 render.W/H 缩到 160x90，也不截断 40 个参照汉字）
-    canvas_w = max(render.W * 2, fsize * 50)
-    canvas_h = max(render.H, fsize * 4)
+    canvas_w, canvas_h = _canvas_size(fsize)
     ass = work / "m.ass"
     ass.write_text(f"""[Script Info]
 ScriptType: v4.00+
@@ -97,9 +165,17 @@ Dialogue: 0,0:00:00.00,0:00:01.00,M,,0,0,0,,{text}
 
 @functools.lru_cache(maxsize=8)
 def _cjk_px_for(font_name: str, font_size: int) -> float:
+    key = _disk_cache_key(font_name, font_size)
+    if key is not None:
+        cached = _read_disk_cache(key)
+        if cached is not None:
+            return cached
     with tempfile.TemporaryDirectory() as d:
         w = Path(d)
-        return (_ink_width(_REF * 40, w, font_name, font_size) - _ink_width(_REF * 20, w, font_name, font_size)) / 20
+        val = (_ink_width(_REF * 40, w, font_name, font_size) - _ink_width(_REF * 20, w, font_name, font_size)) / 20
+    if key is not None:
+        _write_disk_cache(key, val)
+    return val
 
 
 def cjk_px() -> float:

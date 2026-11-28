@@ -982,8 +982,97 @@ def test_ssh_config内容(tmp_path):
     assert "Port 34557" in lines and "User root" in lines
     assert "StrictHostKeyChecking accept-new" in lines
     assert f'UserKnownHostsFile "{tmp_path / "known_hosts"}"' in lines
-    # Include 必须在 Match all 之后、且是最后一行：否则它落进 Host 块，或被放在前面抢走 HostName
-    assert lines[-2:] == ["Match all", "Include ~/.ssh/config"]
+    assert "ControlPath /tmp/ava-%i-cm-%C" in lines
+    # Include 必须在 Match all 之后，且位于前段连接块与后段默认复用/心跳块之间：
+    # 前段 HostName/Port/ControlPath 优先于 ~/.ssh/config；后段 ControlMaster/ServerAlive 允许用户覆写
+    idx_inc = lines.index("Include ~/.ssh/config")
+    assert lines[idx_inc - 1] == "Match all"
+    assert lines.index("HostName connect.weste.seetacloud.com") < idx_inc
+    assert lines.index("ControlMaster auto") > idx_inc
+    assert lines.index(f"ControlPersist {cloud.SSH_CONTROL_PERSIST_S}") > idx_inc
+    assert lines.index(f"ServerAliveInterval {cloud.SSH_SERVER_ALIVE_INTERVAL_S}") > idx_inc
+    assert lines.index(f"ServerAliveCountMax {cloud.SSH_SERVER_ALIVE_COUNT_MAX}") > idx_inc
+
+
+def test_ssh_config真实OpenSSH解析_默认复用保活且允许用户config覆写(tmp_path):
+    """用真实 `ssh -F <cfg> -G` 验证 OpenSSH 先匹配优先语义、cloudflared 短保活与 UID 隔离 ControlPath。"""
+    import shutil
+
+    if not shutil.which("ssh"):
+        pytest.skip("需要 ssh 客户端")
+    user_empty = tmp_path / "empty_user_cfg"
+    user_empty.write_text("", encoding="utf-8")
+    user_override = tmp_path / "override_user_cfg"
+    user_override.write_text("Host *\n    ControlMaster no\n    ServerAliveInterval 60\n", encoding="utf-8")
+
+    # 1. AutoDL 直连：空用户配置生效默认复用 120s + 15s×3 心跳；用户配置可覆写 ControlMaster/ServerAlive
+    raw_autodl = cloud.render_ssh_config("autodl", REAL_CONN, tmp_path / "known_hosts")
+    cfg_default = tmp_path / "cfg_default"
+    cfg_default.write_text(raw_autodl.replace("Include ~/.ssh/config", f"Include {user_empty}"), encoding="utf-8")
+    g_def = _sp.run(["ssh", "-F", str(cfg_default), "-G", "autodl"], capture_output=True, text=True, check=True).stdout
+    kv_def = dict(ln.split(" ", 1) for ln in g_def.splitlines() if " " in ln)
+    assert kv_def["controlmaster"] == "auto"
+    assert kv_def["controlpersist"] == str(cloud.SSH_CONTROL_PERSIST_S)
+    assert kv_def["serveraliveinterval"] == str(cloud.SSH_SERVER_ALIVE_INTERVAL_S)
+    assert kv_def["serveralivecountmax"] == str(cloud.SSH_SERVER_ALIVE_COUNT_MAX)
+    assert kv_def["controlpath"].startswith(f"/tmp/ava-{os.getuid()}-cm-")
+    assert len(kv_def["controlpath"]) + 17 < 104
+
+    cfg_over = tmp_path / "cfg_over"
+    cfg_over.write_text(raw_autodl.replace("Include ~/.ssh/config", f"Include {user_override}"), encoding="utf-8")
+    g_ov = _sp.run(["ssh", "-F", str(cfg_over), "-G", "autodl"], capture_output=True, text=True, check=True).stdout
+    kv_ov = dict(ln.split(" ", 1) for ln in g_ov.splitlines() if " " in ln)
+    assert kv_ov["hostname"] == "connect.weste.seetacloud.com" and kv_ov["port"] == "34557"
+    assert kv_ov["controlmaster"] == "false" and kv_ov["serveraliveinterval"] == "60"
+
+    # 2. Colab cloudflared 隧道使用短保活
+    raw_cf = cloud.render_ssh_config(
+        "ava-colab",
+        {"server": "abc.trycloudflare.com", "user": "root", "proxy_type": "cloudflared"},
+        tmp_path / "known_hosts",
+    )
+    cfg_cf = tmp_path / "cfg_cf"
+    cfg_cf.write_text(raw_cf.replace("Include ~/.ssh/config", f"Include {user_empty}"), encoding="utf-8")
+    g_cf = _sp.run(["ssh", "-F", str(cfg_cf), "-G", "ava-colab"], capture_output=True, text=True, check=True).stdout
+    kv_cf = dict(ln.split(" ", 1) for ln in g_cf.splitlines() if " " in ln)
+    assert kv_cf["controlpersist"] == str(cloud.SSH_CLOUDFLARED_CONTROL_PERSIST_S)
+
+
+def test_换机重连与关机主动拆除旧ControlMaster(monkeypatch, tmp_path):
+    # 1. 同主机端口回收重装（existing_target == new_target）且已有 ssh_config → connect 必须主动 ssh -O exit
+    local = {"ssh_host": "autodl", **REAL_CONN, "api_token": "T"}
+    _cfg, data = _fake_connect_env(monkeypatch, tmp_path, local)
+    scfg = data / "cloud" / "ssh_config"
+    scfg.parent.mkdir(parents=True, exist_ok=True)
+    scfg.write_text("Host autodl\n    HostName connect.weste.seetacloud.com\n", encoding="utf-8")
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        out = "LINKED\n" if argv and "readlink" in argv[-1] else ""
+        return _sp.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(cloud.subprocess, "run", fake_run)
+    rc = cloud.cmd_connect(argparse.Namespace(login=REAL_LOGIN))
+    assert rc == 0
+    assert any(cmd[0] == "ssh" and "-O" in cmd and "exit" in cmd for cmd in seen), (
+        "已有 ssh_config 时换机重连必须主动 ssh -O exit 拆除旧 mux"
+    )
+
+    # 2. cmd_down 发出停机指令后也必须主动拆除旧 mux，避免后续 is_ssh_reachable 命中半开套接字
+    seen.clear()
+    sfile = data / "cloud" / "sessions" / "autodl_default.json"
+    sfile.parent.mkdir(parents=True, exist_ok=True)
+    sfile.write_text(json.dumps({"session": "s1", "provider": "autodl", "mode": "gpu", "up_epoch": 1.0}), encoding="utf-8")
+    monkeypatch.setattr(cloud.time, "sleep", lambda _s: None)
+    reach_iter = iter([True, False])
+    monkeypatch.setattr(cloud, "is_ssh_reachable", lambda host="autodl": next(reach_iter, False))
+    monkeypatch.setattr(cloud, "_ssh", lambda cmd, **kw: _sp.CompletedProcess([cmd], 0, "", ""))
+    rc_down = cloud.cmd_down(argparse.Namespace(rate=None, force=True, provider="autodl", slot="default"))
+    assert rc_down == 0
+    assert any(cmd[0] == "ssh" and "-O" in cmd and "exit" in cmd for cmd in seen), (
+        "down 停机后必须主动 ssh -O exit 拆除旧 ControlMaster"
+    )
 
 
 def _fake_connect_env(monkeypatch, tmp_path, local: dict | None):
@@ -2191,12 +2280,13 @@ def test_multislot_profile_and_ssh_config_isolation(tmp_path):
         "Host autodl", "Host autodl-gpu2", "Host ava-colab", "Host ava-colab-tts",
         "HostName auto1.example.com", "HostName auto2.example.com",
         "HostName col0.trycloudflare.com", "HostName col1.trycloudflare.com",
-        "ControlPath ~/.ssh/cm-%C", "ControlPath ~/.ssh/cm-gpu2-%C", "ControlPath ~/.ssh/cm-tts-%C",
+        "ControlPath /tmp/ava-%i-cm-%C", "ControlPath /tmp/ava-%i-cm-gpu2-%C", "ControlPath /tmp/ava-%i-cm-tts-%C",
     ):
         assert expected in ssh_txt
 
     long_cp = cloud.slot_control_path("very_long_instance_name_beyond_limit")
-    assert len(f"/Users/someuser/{long_cp.removeprefix('~/')}") < 104
+    expanded = long_cp.replace("%i", "65534").replace("%C", "a" * 40)
+    assert len(expanded) + 17 < 104
 
 
 def test_legacy_active_session_migration_and_multislot_lifecycle(monkeypatch, tmp_path, capsys):

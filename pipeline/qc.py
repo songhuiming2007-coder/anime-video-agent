@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 import subprocess
@@ -23,6 +24,10 @@ LUFS_TARGET = paths.conf("audio.lufs", -16.0)
 LUFS_TOL = paths.conf("audio.lufs_tolerance", 1.5)
 TRUE_PEAK_MAX = paths.conf("audio.true_peak_max", -1.0)   # dBTP
 AV_DRIFT_MAX = 0.5                     # 音画时长差，秒
+AUDIO_PKT_GAP_MAX = 0.5                # AAC-LC 音频包总时长相对容器时长的最大允许缺口，秒。
+                                        # 正常封装仅差 1 帧级编码预热（≤0.05s）；若渲染期滤镜重初始化
+                                        # 丢弃 loudnorm 缓冲，会在容器内留下 ~3s/次的 PTS 断洞，
+                                        # 容器时长仍与视频对齐，必须靠音频包数反推抓出静默丢包。
 BLACK_MAX = 0.5                        # 单段纯黑上限，秒
 BLACK_MAX_SP = 1.5                     # SP 特典素材（MV/Live，ADR-0010）的纯黑上限，秒。
                                         # 演唱会暗灯转场、艺术 MV 的 Fade to Black 是表达本身，
@@ -43,6 +48,9 @@ SILENCE_MAX = 2.0                      # 单段静音上限，秒
 BLACK_SRC_BUF = 0.3                    # 对照源片时前后各放宽的秒数
                                         # ffmpeg 快速 seek 会落在关键帧上，实际解码起点
                                         # 可能早于请求位置；不放宽会漏检紧贴边界的黑段。
+BLACK_CLUSTER_GAP = 10.0               # 同源多处黑帧间距 ≤ 此秒数才合并为一次扫描窗口；
+                                        # 此前按 [min, max] 整段扫，两处相隔 5 分钟的 0.5 s 黑帧
+                                        # 会白解中间 319 s 1080p MKV（2026-11-27 EP1 实测占 qc 18.4%）。
 ASSEMBLY = "04-assembly.json"   # 总装期部件账本（assemble.sh 写，qc 读）
 
 
@@ -95,6 +103,53 @@ def _duration(video: Path, stream: str) -> float:
     if not raw or raw == "N/A":
         raise SystemExit(f"FAIL 读不到 {video} 的 {stream} 时长，文件可能损坏")
     return float(raw)
+
+
+def _audio_packet_check(video: Path, adur: float) -> Check | None:
+    """校验 AAC-LC 音频流实际编码帧覆盖时长与容器时长一致，捕获 PTS 断洞/滤镜重建静默丢包。
+
+    拿不到可证伪的 `nb_frames`/`sample_rate`（如无帧数头容器或非 AAC-LC 编码）时返回 None，
+    遵循判据 4「拿不到能证伪信息时跳过、不定罪」。
+    """
+    p = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name,profile,sample_rate,nb_frames",
+         "-of", "json", str(video)],
+        capture_output=True, text=True, check=False,
+    )
+    if p.returncode != 0 or not p.stdout.strip():
+        return None
+    try:
+        info = json.loads(p.stdout)
+    except ValueError:
+        return None
+    if not isinstance(info, dict):
+        return None
+    streams = info.get("streams") or []
+    if not streams or not isinstance(streams[0], dict):
+        return None
+    st = streams[0]
+    if str(st.get("codec_name", "")).lower() != "aac":
+        return None
+    prof = str(st.get("profile", "")).lower()
+    if "he" in prof or "sbr" in prof:
+        return None
+    try:
+        sr = int(st["sample_rate"])
+        nb = int(st["nb_frames"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if sr <= 0 or nb <= 0:
+        return None
+    pkt_dur = nb * 1024 / sr
+    missing = adur - pkt_dur
+    ok = missing <= AUDIO_PKT_GAP_MAX
+    detail = (
+        f"{nb} 包覆 {pkt_dur:.2f}s / 容器 {adur:.2f}s"
+        if ok
+        else f"缺失 {missing:.2f}s（{nb} 包仅覆 {pkt_dur:.2f}s / 容器 {adur:.2f}s，疑似滤镜重建丢包）"
+    )
+    return Check("音频轨包连续", ok, detail)
 
 
 def _map_black_to_sources(blacks: list[tuple[float, float]],
@@ -245,6 +300,81 @@ def assembly_ledger(episode: Path) -> dict | None:
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
+def _cluster_black_windows(
+    spans: list[tuple],
+    *,
+    max_gap: float = BLACK_CLUSTER_GAP,
+) -> list[tuple[float, float]]:
+    """把同一源片/部件的多个黑帧映射区间按间隙聚成紧凑检测窗口 [(lo, hi), ...]。
+
+    每条映射先各自放宽 FRAME_BOUND + BLACK_SRC_BUF 并夹到 >= 0；间距 ≤ max_gap 的合并为
+    同一窗口（省掉重复启进程），间距更大的拆成独立短窗（避免两头黑帧把中间数分钟正片白解一遍）。
+    """
+    pad = FRAME_BOUND + BLACK_SRC_BUF
+    wins = sorted((max(0.0, s[1] - pad), s[2] + pad) for s in spans)
+    if not wins:
+        return []
+    merged: list[list[float]] = [[wins[0][0], wins[0][1]]]
+    for lo, hi in wins[1:]:
+        if lo <= merged[-1][1] + max_gap:
+            if hi > merged[-1][1]:
+                merged[-1][1] = hi
+        else:
+            merged.append([lo, hi])
+    return [(lo, hi) for lo, hi in merged]
+
+
+def _probe_source_blacks(
+    by_src: dict[str, list[tuple]],
+) -> tuple[set[tuple], list[str]]:
+    """对分组后的源片/部件跑分段黑帧对照，返回 (已覆盖映射集合, 失败源说明列表)。"""
+    tasks: list[tuple[str, float, float]] = [
+        (src, lo, hi)
+        for src, spans in by_src.items()
+        for lo, hi in _cluster_black_windows(spans)
+    ]
+    if not tasks:
+        return set(), []
+
+    def _check_one(item: tuple[str, float, float]) -> tuple[str, list[tuple[float, float]], str | None]:
+        src, lo, hi = item
+        err, rc = _run([
+            "ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
+            "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
+            f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an",
+            "-f", "null", "-",
+        ])
+        if rc != 0:
+            return src, [], f"{Path(src).name}：ffmpeg 退出码 {rc}（{_tail(err)}）"
+        blacks = [
+            (lo + float(a), lo + float(b))
+            for a, b in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err)
+        ]
+        return src, blacks, None
+
+    if len(tasks) == 1:
+        results = [_check_one(tasks[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
+            results = list(pool.map(_check_one, tasks))
+
+    blacks_by_src: dict[str, list[tuple[float, float]]] = {}
+    src_errs: list[str] = []
+    for src, found, err_msg in results:
+        if err_msg is not None:
+            src_errs.append(err_msg)
+            continue
+        blacks_by_src.setdefault(src, []).extend(found)
+
+    covered: set[tuple] = set()
+    for src, spans in by_src.items():
+        src_blacks = blacks_by_src.get(src)
+        if not src_blacks:
+            continue
+        covered |= {span for span in spans if _mapped_covered(span[:6], src_blacks)}
+    return covered, src_errs
+
+
 def _assembly_black_spans(blacks: list[tuple[float, float]], asm: dict
                           ) -> tuple[list, list, list]:
     """总装期的黑帧归因：成片黑帧 → 落在哪个部件 → 该部件同位置的黑帧。
@@ -268,25 +398,7 @@ def _assembly_black_spans(blacks: list[tuple[float, float]], asm: dict
             mapped.append(span)
             by_part.setdefault(p["path"], []).append(span)
 
-    covered: set[tuple] = set()
-    src_errs: list[str] = []
-    for src, spans in by_part.items():
-        # 漂移窗口取 1 帧：部件内部的累积帧舍入已在它自己那期质检里量过
-        # （一期 38ms / 二期 6ms / 三期 26ms），总装只多一层容器偏移。
-        lo = min(s[1] for s in spans) - FRAME_BOUND - BLACK_SRC_BUF
-        hi = max(s[2] for s in spans) + FRAME_BOUND + BLACK_SRC_BUF
-        err, rc = _run(["ffmpeg", "-nostdin", "-ss", f"{max(0.0, lo):.3f}",
-                        "-t", f"{hi - max(0.0, lo):.3f}", "-i", src, "-vf",
-                        f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an",
-                        "-f", "null", "-"])
-        if rc != 0:
-            src_errs.append(f"{Path(src).name}：ffmpeg 退出码 {rc}（{_tail(err)}）")
-            continue
-        base = max(0.0, lo)
-        part_blacks = [(base + float(a), base + float(b))
-                       for a, b in re.findall(
-                           r"black_start:([\d.]+) black_end:([\d.]+)", err)]
-        covered |= {span for span in spans if _mapped_covered(span[:6], part_blacks)}
+    covered, src_errs = _probe_source_blacks(by_part)
 
     defects = _black_defects(mapped, covered)
     inherited = [(s[0], s[3], s[4]) for s in mapped if s in covered]
@@ -327,6 +439,9 @@ def check(video: Path, plan: dict | None = None,
     out.append(Check("音画时长对齐",
                      abs(vdur - adur) < AV_DRIFT_MAX,
                      f"画面 {vdur:.3f}s（{vdur / 60:.2f} 分钟）/ 音频 {adur:.3f}s 差 {abs(vdur - adur) * 1000:.0f}ms"))
+    pkt_chk = _audio_packet_check(video, adur)
+    if pkt_chk is not None:
+        out.append(pkt_chk)
 
     if plan or asm:
         if mplan:
@@ -344,13 +459,32 @@ def check(video: Path, plan: dict | None = None,
         out.append(Check("与排片一致", False,
                          "跳过：没有 04-clips.approved.json", skipped=True))
 
+    # 音视频两路并行扫描（2026-11-27 实证优化）：
+    # 1. 音频侧必须加 `-vn`（此前漏传导致 loudnorm 与 silencedetect 各自全片软解 1080p 视频）；
+    #    用 `asplit=2` 并行分支同时跑 loudnorm 与 silencedetect（不可串接，否则 loudnorm 改电平门限）。
+    # 2. 视频侧 `blackdetect` 仅解码画面（`-an`），与音频侧并发执行，28.6 分钟长片实测 95s → 35s（2.7×）。
+    audio_cmd = [
+        "ffmpeg", "-nostdin", "-i", str(video), "-vn",
+        "-filter_complex",
+        f"[0:a]asplit=2[a1][a2];[a1]loudnorm=print_format=json[o1];"
+        f"[a2]silencedetect=n=-45dB:d={SILENCE_MAX}[o2]",
+        "-map", "[o1]", "-map", "[o2]", "-f", "null", "-",
+    ]
+    video_cmd = [
+        "ffmpeg", "-nostdin", "-i", str(video), "-vf",
+        f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an", "-f", "null", "-",
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_aud = pool.submit(_run, audio_cmd)
+        f_vid = pool.submit(_run, video_cmd)
+        err_a, rc_a = f_aud.result()
+        err_v, rc_v = f_vid.result()
+
     # 响度与削波：用第二遍 loudnorm 的测量结果，不改文件
-    err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
-                    "loudnorm=print_format=json", "-f", "null", "-"])
-    m = re.search(r"\{[^{}]*input_i[^{}]*\}", err, re.S)
-    if rc != 0:
+    m = re.search(r"\{[^{}]*input_i[^{}]*\}", err_a, re.S)
+    if rc_a != 0:
         out.append(Check("响度测量", False,
-                         f"ffmpeg 退出码 {rc}：{_tail(err)}"))
+                         f"ffmpeg 退出码 {rc_a}：{_tail(err_a)}"))
     elif m:
         d = json.loads(m.group(0))
         i, tp = float(d["input_i"]), float(d["input_tp"])
@@ -367,10 +501,8 @@ def check(video: Path, plan: dict | None = None,
     # S03E12 台词开口处的转场黑场 0.71s，源片同样黑）。
     # 所以成片黑帧映射回源区间，源片同样黑 = 内容，通过；成片独有黑 = 渲染
     # 缺陷，拦截。没 plan 时退回旧行为：无源可对照，宁严勿松。
-    err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-vf",
-                    f"blackdetect=d={BLACK_MAX}:pic_th=0.98", "-an", "-f", "null", "-"])
-    blacks = re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err) if rc == 0 else []
-    probe_err = None if rc == 0 else f"ffmpeg 退出码 {rc}：{_tail(err)}"
+    blacks = re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", err_v) if rc_v == 0 else []
+    probe_err = None if rc_v == 0 else f"ffmpeg 退出码 {rc_v}：{_tail(err_v)}"
     defects: list[tuple[str, float, float, float, float]] = []
     src_errs: list[str] = []
     inherited: list[tuple[str, float, float]] = []   # 总装期：继承自分期成片的黑场
@@ -381,34 +513,10 @@ def check(video: Path, plan: dict | None = None,
         elif plan:
             mapped = _map_black_to_sources(
                 [(float(a), float(b)) for a, b in blacks], plan, _seg_starts(mplan, audio))
-            # 按源文件分组，一次 ffmpeg 覆盖该文件全部相关区间，不逐黑帧重开进程。
-            # 区间本身再放宽 1 帧：ffmpeg 快速 seek 落在关键帧上，实际解码起点
-            # 可能早于请求位置；BLACK_SRC_BUF 就是为这种边界黑段留的放宽。
-            by_src: dict[str, list[tuple[str, float, float, float, float, int, int]]] = {}
+            by_src: dict[str, list[tuple]] = {}
             for span in mapped:
-                src, slo, shi, flo, fhi, idx, bi = span
-                by_src.setdefault(src, []).append(span)
-            covered: set[tuple] = set()
-            for src, spans in by_src.items():
-                # 检测范围也要吃下映射窗口（FRAME_BOUND），否则源黑段在
-                # 窗口内、检测起点外会整段漏检，判成「源片无黑」（实测踩过：
-                # 黑段起点在映射区间 0.26s 前，d=0.5 检测不到）。
-                lo = min(s for _, s, _, _, _, _, _ in spans) - FRAME_BOUND - BLACK_SRC_BUF
-                hi = max(e for _, _, e, _, _, _, _ in spans) + FRAME_BOUND + BLACK_SRC_BUF
-                err2, rc2 = _run(["ffmpeg", "-nostdin", "-ss", f"{lo:.3f}",
-                                  "-t", f"{hi - lo:.3f}", "-i", src, "-vf",
-                                  f"blackdetect=d={BLACK_MAX}:pic_th=0.98",
-                                  "-an", "-f", "null", "-"])
-                if rc2 != 0:
-                    # 源片对照跑不动 = 无法证明「源片自带」，宁严勿松记进 FAIL
-                    src_errs.append(f"{Path(src).name}：ffmpeg 退出码 {rc2}（{_tail(err2)}）")
-                    continue
-                # blackdetect 输出相对 -ss 起点，换算回源绝对时间
-                src_blacks = [(lo + float(a), lo + float(b))
-                              for a, b in re.findall(
-                                  r"black_start:([\d.]+) black_end:([\d.]+)", err2)]
-                covered |= {span for span in spans
-                            if _mapped_covered(span[:6], src_blacks)}
+                by_src.setdefault(span[0], []).append(span)
+            covered, src_errs = _probe_source_blacks(by_src)
             # SP 特典素材（clip 带 sp 标记）的艺术暗场按 BLACK_MAX_SP 放宽
             sp_srcs = {c["source"] for s in plan["segments"] for c in s["clips"]
                        if c.get("sp")}
@@ -439,8 +547,6 @@ def check(video: Path, plan: dict | None = None,
     # 静音。试听型的歌曲自然收尾（fade 尾音 < -45dB）不是缺陷——
     # 静音区间尾部对齐某个音乐事件终点（曲目/前景/BGM 段的结束）就豁免
     # （2026-08-16 实测：Planetes 自然收尾 793.6s、Departures 尾段 428.1s）。
-    err, rc = _run(["ffmpeg", "-nostdin", "-i", str(video), "-af",
-                    f"silencedetect=n=-45dB:d={SILENCE_MAX}", "-f", "null", "-"])
     song_ends: set[float] = set()
     if mplan:
         for tr in mplan["tracks"]:
@@ -449,15 +555,15 @@ def check(video: Path, plan: dict | None = None,
     card_wins = ([(p["offset"], p["offset"] + p["duration"])
                   for p in asm["parts"] if p["kind"] == "card"] if asm else [])
     sils = [(float(s), float(e)) for s, e in re.findall(
-        r"silence_start: ([\d.]+)\s+silence_end: ([\d.]+)", err)] if rc == 0 else []
+        r"silence_start: ([\d.]+)\s+silence_end: ([\d.]+)", err_a)] if rc_a == 0 else []
     bad = [s for s, e in sils if not _silence_exempt(s, e, song_ends, card_wins)]
-    if rc != 0:
-        sil_detail = f"ffmpeg 退出码 {rc}：{_tail(err)}（静音检测没跑成，不判无静音）"
+    if rc_a != 0:
+        sil_detail = f"ffmpeg 退出码 {rc_a}：{_tail(err_a)}（静音检测没跑成，不判无静音）"
     elif bad:
         sil_detail = "、".join(f"{s:.1f}s" for s in bad[:3])
     else:
         sil_detail = "无" + (f"（章节卡静音桥接豁免 {len(card_wins)} 处）" if card_wins else "")
-    out.append(Check(f"无 >{SILENCE_MAX}s 静音", rc == 0 and not bad, sil_detail))
+    out.append(Check(f"无 >{SILENCE_MAX}s 静音", rc_a == 0 and not bad, sil_detail))
 
     # 字幕。烧录之后没法从成片反查，所以查它的来源。
     # D132：查上屏的那份文本——过了本期字幕替换表之后的

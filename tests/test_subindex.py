@@ -504,3 +504,90 @@ class TestLoadAllFilterBeforeCheck:
         np.save(tmp_path / "春物_S01E01.npy", np.zeros((1, 4), dtype=np.float32))
         with pytest.raises(SystemExit, match="reindex"):
             subindex.load_all(tmp_path, "春物")
+
+
+class TestSubindexPerfGuards:
+    """2026-11 子索引性能护栏：延迟导入 ML 栈、离线优先加载、按番前缀预筛与回退。"""
+
+    def test_导入subindex不拉起torch和sentence_transformers(self):
+        import subprocess
+        import sys
+
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import sys, pipeline.subindex; "
+             "assert 'sentence_transformers' not in sys.modules; "
+             "assert 'torch' not in sys.modules"],
+            capture_output=True, text=True, check=False,
+        )
+        assert r.returncode == 0, r.stderr
+
+    def test_离线优先加载缓存_缺缓存再回退联网(self, monkeypatch):
+        import sys
+        import types
+
+        calls: list[tuple[str, dict]] = []
+
+        class _Hit:
+            def __init__(self, name, **kw):
+                calls.append((name, kw))
+
+        fake_st = types.SimpleNamespace(SentenceTransformer=_Hit)
+        snap_calls: list[tuple[str, dict]] = []
+
+        def fake_snap(repo_id, **kw):
+            snap_calls.append((repo_id, kw))
+            return "/fake/cache/snapshots/rev1"
+
+        monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st)
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=fake_snap))
+        obj = subindex._load_sentence_transformer("BAAI/bge-base-zh-v1.5")
+        assert isinstance(obj, _Hit)
+        assert snap_calls == [("BAAI/bge-base-zh-v1.5", {"local_files_only": True})]
+        assert calls == [("/fake/cache/snapshots/rev1", {"local_files_only": True})]
+
+        calls.clear()
+
+        def fake_snap_miss(repo_id, **kw):
+            raise OSError("local cache miss")
+
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=fake_snap_miss))
+        obj2 = subindex._load_sentence_transformer("BAAI/bge-base-zh-v1.5")
+        assert isinstance(obj2, _Hit)
+        assert calls == [("BAAI/bge-base-zh-v1.5", {})]
+
+    def test_前缀预筛不读他番文件_元字符与跨番混剪均不静默丢番(self, tmp_path):
+        # 他番放损坏 JSON：单番正常命中时若预筛失效全目录扫描会 JSONDecodeError 崩掉
+        (tmp_path / "他番_S01E01.json").write_text("{corrupt", encoding="utf-8")
+        (tmp_path / "他番_S01E01.npy").write_bytes(b"")
+
+        def _write(fname: str, anime_name: str, text: str) -> None:
+            doc = {"meta": {"model_id": subindex.MODEL_NAME, "revision": None},
+                   "units": [{"anime": anime_name, "season": 1, "episode": 1,
+                              "start": 0.0, "end": 2.0, "text": text}]}
+            (tmp_path / f"{fname}.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            np.save(tmp_path / f"{fname}.npy", np.zeros((1, 4), dtype=np.float32))
+
+        _write("春物_S01E01", "春物", "春物台词")
+        _write("Fate [UBW]_S01E01", "Fate [UBW]", "圣杯台词")
+
+        vecs, units = subindex.load_all(tmp_path, "春物")
+        assert vecs.shape == (1, 4) and [u.anime for u in units] == ["春物"]
+
+        # H3a：番名含 glob 元字符 [ ] 时必须经 glob.escape 命中，不静默漏载也不触发全目录读坏文件
+        vecs_meta, units_meta = subindex.load_all(tmp_path, ["春物", "Fate [UBW]"])
+        assert vecs_meta.shape == (2, 4)
+        assert {u.anime for u in units_meta} == {"春物", "Fate [UBW]"}
+
+        # H3b：跨番混剪中有一部番为非规范文件名（不含 `<番>_` 前缀）时，必须回退全目录加载两部番，
+        # 不许因第一部番命中前缀而把第二部番静默丢弃
+        sub = tmp_path / "mixed"
+        sub.mkdir()
+        for fname, aname in (("春物_S01E01", "春物"), ("custom_legacy", "旧番")):
+            doc = {"meta": {"model_id": subindex.MODEL_NAME, "revision": None},
+                   "units": [{"anime": aname, "season": 1, "episode": 1,
+                              "start": 0.0, "end": 2.0, "text": aname}]}
+            (sub / f"{fname}.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            np.save(sub / f"{fname}.npy", np.zeros((1, 4), dtype=np.float32))
+        vecs2, units2 = subindex.load_all(sub, ["春物", "旧番"])
+        assert vecs2.shape == (2, 4) and {u.anime for u in units2} == {"春物", "旧番"}

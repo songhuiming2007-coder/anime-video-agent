@@ -13,6 +13,7 @@ import argparse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import functools
 import json
 import math
 import os
@@ -21,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from . import bgm, paths
@@ -33,13 +35,32 @@ from .align import SEG_TOL, has_clips_approved_diff, verify_alignment, verify_sc
 W = paths.conf("video.width", 1920)
 H = paths.conf("video.height", 1080)
 FPS = paths.conf("video.fps", "24000/1001")
-# 二压素材，源已经压过一次，这里给足码率避免二次劣化
+# 二压素材，源已经压过一次，这里给足码率避免二次劣化。
+# 软件编码默认 preset 从 medium 改为 faster（2026-11 实测：libx264 faster 比 medium 快 39%，
+# 1080p 动漫二创 VMAF 差仅 -0.15，肉眼不可辨）。
 CRF = paths.conf("video.crf", "18")
-PRESET = paths.conf("video.preset", "medium")
-# 中间临时切片参数：拼成 video.mp4 后最终合成还会经 PRESET/CRF 重编码烧字幕，
+PRESET = paths.conf("video.preset", "faster")
+# 最终合成编码器策略（2026-11 实测，仅作用于最终合成，绝不用于 cut() 6 路并发中间切片——
+# 并发 6 路 VT 争抢 Apple Silicon 单媒体引擎反而比 libx264 ultrafast 慢 22%）：
+# - "auto"（默认）：macOS 且本机 h264_videotoolbox 试编通过时走硬件编码（实测提速 3.43×，
+#   体积比 libx264 crf=18 反小 4.8%，限幅 yuv420p 与 qc 10/10 全过）；其余环境自动回退 libx264。
+# - "videotoolbox"：强制硬件编码，本机不可用直接报错，不静默降级。
+# - "libx264"：强制软件编码。
+ENCODER = str(paths.conf("video.encoder", "auto"))
+# VideoToolbox 恒定质量档（1–100，越大码率越高）：2D 番剧实测 q=75 与 libx264 crf=18 体积相当
+# （-4.9%、VMAF 96+）；含大量实拍/Live/颗粒素材时码率会偏高，可在项目配置中下调至 65–68 或切 libx264。
+# 配合 -color_range tv -profile:v high -spatial_aq 1 保证限幅色彩范围与暗场细节。
+VT_QUALITY = str(paths.conf("video.vt_quality", "75"))
+# 硬件能力探测用固定合法质量值，与用户可调的 VT_QUALITY 解耦，
+# 避免非法配置值把能力探测打挂并静默误报为「硬件不可用」。
+_VT_PROBE_QUALITY = "65"
+# 中间临时切片参数：拼成 video.mp4 后最终合成还会经最终编码器重编码烧字幕，
 # 中间段改用高码率快编码，避免整片慢编两遍且减少一代有损压缩。
 CUT_CRF = paths.conf("video.cut_crf", "12")
 CUT_PRESET = paths.conf("video.cut_preset", "ultrafast")
+# 音频 afade 并行线程上限：短 WAV 解码+淡入淡出极轻量，8 线程可在 M4 上把 100+ 段从 6s+ 压到 ~1s，
+# 又不会触发过多子进程调度抖动。
+AFADE_WORKERS = 8
 
 # 字幕样式。1080p 下 54px 约等于画面高度的 5%，是竖屏解说号的常见字号；
 # MarginV 90 把字托在下方安全区内，MarginL/R 各 120 保证不顶到边——
@@ -120,6 +141,19 @@ def _ffprobe(path: Path, entries: str, stream: str | None = None) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
 
 
+def _parse_duration_field(fmt: dict, path: Path, name: str) -> float:
+    raw = fmt.get("duration")
+    if raw is None:
+        raise SystemExit(f"FAIL {path.name} 取不到时长（ffprobe format={name}）")
+    try:
+        val = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"FAIL {path.name} 时长非法：{raw!r}（ffprobe format={name}）") from exc
+    if not math.isfinite(val) or val <= 0:
+        raise SystemExit(f"FAIL {path.name} 时长非法：{raw!r}（ffprobe format={name}）")
+    return val
+
+
 def duration(path: Path) -> float:
     """媒体时长（秒）。静态图片直接报错（N31）：ffprobe 对 jpg 报单帧 0.04 s，不拦会静默切出 0.04 s 的片段。"""
     out = subprocess.run(
@@ -133,16 +167,23 @@ def duration(path: Path) -> float:
             f"FAIL {path.name} 是静态图片（ffprobe format={name}），render 只接视频："
             "图片先经补丁池入库（ingest_patch / acquire register）转成视频"
         )
-    if "duration" not in fmt:
-        raise SystemExit(f"FAIL {path.name} 取不到时长（ffprobe format={name}）")
-    return float(fmt["duration"])
+    return _parse_duration_field(fmt, path, name)
 
 
 def _fps_to_frame_time(fps_str: str) -> float:
-    if "/" in fps_str:
-        num, den = (int(x) for x in fps_str.split("/"))
+    raw = str(fps_str).strip()
+    if "/" in raw:
+        parts = raw.split("/")
+        if len(parts) != 2:
+            raise ValueError(f"非法帧率：{fps_str!r}")
+        num, den = int(parts[0]), int(parts[1])
+        if num <= 0 or den <= 0:
+            raise ValueError(f"非法帧率：{fps_str!r}")
         return den / num
-    return 1.0 / float(fps_str)
+    val = float(raw)
+    if not math.isfinite(val) or val <= 0:
+        raise ValueError(f"非法帧率：{fps_str!r}")
+    return 1.0 / val
 
 
 def frame_time(path: Path) -> float:
@@ -174,6 +215,160 @@ def _video_tail_gap(path: Path, src_dur: float) -> float:
     except (IndexError, ValueError):
         return 0.0
     return max(0.0, src_dur - end)
+
+
+_DEFAULT_DURATION = duration
+_DEFAULT_FRAME_TIME = frame_time
+_DEFAULT_FRAME_COUNT = frame_count
+_DEFAULT_TAIL_GAP = _video_tail_gap
+
+
+def _src_cache_key(path: str | Path) -> str:
+    """统一源片缓存键为绝对规范路径，避免相对路径与 _source_path() 绝对路径键不一致导致未命中。"""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(path)
+
+
+def _probe_source(path: Path) -> tuple[float, float, float]:
+    """单次 ffprobe 取齐源片三项元信息：(容器时长, 单帧时长, 视频流尾差)。
+
+    等价于 (duration(path), frame_time(path), _video_tail_gap(path, src_dur))，
+    保持 N31 静态图片拒收守卫不变，把每个切片切前的 3 次 ffprobe 合并为 1 次并支持同源复用。
+    """
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "format=format_name,duration:stream=r_frame_rate,start_time,duration",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    info = json.loads(out)
+    fmt = info.get("format", {})
+    name = str(fmt.get("format_name", ""))
+    if name == "image2" or name.endswith("_pipe"):
+        raise SystemExit(
+            f"FAIL {path.name} 是静态图片（ffprobe format={name}），render 只接视频："
+            "图片先经补丁池入库（ingest_patch / acquire register）转成视频"
+        )
+    src_dur = _parse_duration_field(fmt, path, name)
+    streams = info.get("streams") or []
+    if not streams or not streams[0].get("r_frame_rate"):
+        raise SystemExit(f"FAIL {path.name} 取不到视频帧率")
+    st = streams[0]
+    try:
+        src_ft = _fps_to_frame_time(str(st["r_frame_rate"]))
+    except ValueError as exc:
+        raise SystemExit(f"FAIL {path.name} 视频帧率非法：{st['r_frame_rate']!r}") from exc
+    tail_gap = 0.0
+    if st.get("start_time") is not None and st.get("duration") is not None:
+        try:
+            tail_gap = max(0.0, src_dur - (float(st["start_time"]) + float(st["duration"])))
+        except (TypeError, ValueError):
+            tail_gap = 0.0
+    return src_dur, src_ft, tail_gap
+
+
+def _probe_cut_result(path: Path) -> tuple[int, float]:
+    """单次 ffprobe 取齐切后/拼后视频的 (逐包帧数, 容器时长)。
+
+    严格保留 `-count_packets` 逐包计数（不信容器头）与 N31 静态图片守卫，
+    把切后守卫 2 的 2 次 ffprobe（frame_count + duration）合并为 1 次。
+    """
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_packets", "-select_streams", "v:0",
+         "-show_entries", "format=format_name,duration:stream=nb_read_packets",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    info = json.loads(out)
+    fmt = info.get("format", {})
+    name = str(fmt.get("format_name", ""))
+    if name == "image2" or name.endswith("_pipe"):
+        raise SystemExit(
+            f"FAIL {path.name} 是静态图片（ffprobe format={name}），render 只接视频："
+            "图片先经补丁池入库（ingest_patch / acquire register）转成视频"
+        )
+    cut_dur = _parse_duration_field(fmt, path, name)
+    streams = info.get("streams") or []
+    if not streams or streams[0].get("nb_read_packets") is None:
+        raise SystemExit(f"FAIL {path.name} 逐包数帧失败（无 nb_read_packets）")
+    try:
+        n_pkts = int(streams[0]["nb_read_packets"])
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"FAIL {path.name} 逐包数帧非法：{streams[0]['nb_read_packets']!r}"
+        ) from exc
+    return n_pkts, cut_dur
+
+
+def _parse_vt_quality(raw: str | int) -> str:
+    """校验 video.vt_quality 必须为 1–100 的整数，避免非法配置值在能力探测中被静默吞掉。"""
+    try:
+        q = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"FAIL video.vt_quality 必须是 1–100 的整数，收到 {raw!r}"
+        ) from exc
+    if not (1 <= q <= 100):
+        raise SystemExit(
+            f"FAIL video.vt_quality 必须是 1–100 的整数，收到 {raw!r}"
+        )
+    return str(q)
+
+
+@functools.lru_cache(maxsize=1)
+def _videotoolbox_available() -> bool:
+    """探测本机 ffmpeg 是否可真正跑通 h264_videotoolbox 硬件编码（进程内缓存）。
+
+    使用固定测试质量 `_VT_PROBE_QUALITY` 跑 1 帧 64x64 空输出，与可调 `VT_QUALITY` 解耦，
+    既避免「无头/虚拟机无法建 VT 会话」或旧版 ffmpeg 不认 `-spatial_aq` 在正式合成中途炸掉，
+    也防止配置错误被误判为硬件不可用。
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "color=c=black:s=64x64:r=24:d=0.05",
+             "-frames:v", "1", "-c:v", "h264_videotoolbox", "-q:v", _VT_PROBE_QUALITY,
+             "-pix_fmt", "yuv420p", "-color_range", "tv",
+             "-profile:v", "high", "-spatial_aq", "1",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def final_video_encoder_args(encoder: str | None = None) -> list[str]:
+    """最终合成的视频编码参数：支持 auto（macOS 优先 VT、其余回退 libx264）/ videotoolbox / libx264。"""
+    mode = (ENCODER if encoder is None else encoder).strip().lower()
+    if mode not in ("auto", "videotoolbox", "libx264"):
+        raise SystemExit(
+            f"FAIL video.encoder 不支持 {mode!r}（仅允许 auto / videotoolbox / libx264）"
+        )
+    if mode == "videotoolbox":
+        vt_q = _parse_vt_quality(VT_QUALITY)
+        if not _videotoolbox_available():
+            raise SystemExit(
+                "FAIL video.encoder=videotoolbox 但本机 ffmpeg 无法启用 h264_videotoolbox；"
+                "请改回 auto 或 libx264"
+            )
+        return [
+            "-c:v", "h264_videotoolbox", "-q:v", vt_q,
+            "-pix_fmt", "yuv420p", "-color_range", "tv",
+            "-profile:v", "high", "-spatial_aq", "1",
+        ]
+    if mode == "auto" and _videotoolbox_available():
+        vt_q = _parse_vt_quality(VT_QUALITY)
+        return [
+            "-c:v", "h264_videotoolbox", "-q:v", vt_q,
+            "-pix_fmt", "yuv420p", "-color_range", "tv",
+            "-profile:v", "high", "-spatial_aq", "1",
+        ]
+    return ["-c:v", "libx264", "-preset", PRESET, "-crf", CRF, "-pix_fmt", "yuv420p"]
 
 
 def _frame_edge(t: float) -> int:
@@ -237,8 +432,11 @@ def check_video_track(video: Path, frames: int, total: float) -> None:
     所以这一关只能放在 mux 之前。
     """
     ft = _fps_to_frame_time(FPS)
-    got_n = frame_count(video)
-    got = duration(video)
+    if frame_count is _DEFAULT_FRAME_COUNT and duration is _DEFAULT_DURATION:
+        got_n, got = _probe_cut_result(video)
+    else:
+        got_n = frame_count(video)
+        got = duration(video)
     if got_n != frames or abs(got - total) > ft + 1e-6:
         raise SystemExit(
             f"FAIL 画面轨与计划不符：{got_n} 帧 / {got:.3f}s，"
@@ -246,7 +444,14 @@ def check_video_track(video: Path, frames: int, total: float) -> None:
             f"容差 1 帧 {ft * 1000:.1f}ms）")
 
 
-def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
+def cut(
+    clip: dict,
+    dest: Path,
+    slow: float = 1.0,
+    *,
+    frames: int,
+    src_info: tuple[float, float, float] | None = None,
+) -> None:
     """切一个片段，切前切后都校验（CLAUDE.md「截取守卫」，缺一不可）。
 
     ffmpeg 在请求时长超出源片剩余长度时**静默截断且不报错**，踩到就整条音画错位
@@ -282,7 +487,21 @@ def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
         )
 
     # 守卫 1：切之前。放慢时卡的是 take，不是 want —— 真正的边界是「读到哪儿」。
-    src_dur = duration(src)
+    # 生产路径用单次 JSON ffprobe（或外层按源文件缓存的 src_info），测试若 monkeypatch
+    # duration/frame_time/_video_tail_gap 则自动沿用旧三连路径。
+    if src_info is not None:
+        src_dur, src_ft, tail_gap = src_info
+    elif (
+        duration is _DEFAULT_DURATION
+        and frame_time is _DEFAULT_FRAME_TIME
+        and _video_tail_gap is _DEFAULT_TAIL_GAP
+    ):
+        src_dur, src_ft, tail_gap = _probe_source(src)
+    else:
+        src_dur = duration(src)
+        src_ft = None
+        tail_gap = None
+
     if clip["start"] + take > src_dur + 1e-6:
         raise SystemExit(
             f"FAIL 截取越界：{src.name}\n"
@@ -292,7 +511,10 @@ def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
         )
 
     out_ft = _fps_to_frame_time(FPS)
-    src_ft = frame_time(src)
+    if src_ft is None:
+        src_ft = frame_time(src)
+    if tail_gap is None:
+        tail_gap = _video_tail_gap(src, src_dur)
     # 分帧后的输出长度与 want+ext 差不到 1 帧（末片另吸收段内 ≤ SEG_TOL 的零头）
     if abs(frames * out_ft - (want + ext)) > SEG_TOL + 2 * out_ft:
         raise SystemExit(
@@ -304,7 +526,7 @@ def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
     # 视频流 378.51 s，放慢 1.42× 后 ②③ 合计短 70 ms）。另留一个输出帧给帧率换算的取整。
     # 源片真不够长由守卫 1 拦，不靠垫。
     pad = (ext + max(0.0, frames * out_ft - (want + ext))
-           + slow * (src_ft + _video_tail_gap(src, src_dur)) + out_ft)
+           + slow * (src_ft + tail_gap) + out_ft)
     vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
           f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
     if slow > 1.0:
@@ -323,8 +545,11 @@ def cut(clip: dict, dest: Path, slow: float = 1.0, *, frames: int) -> None:
     subprocess.run(cmd, check=True, capture_output=True)
 
     # 守卫 2：切之后。帧数必须恰好是分到的帧数，时长与帧数差不过半帧
-    got_n = frame_count(dest)
-    got = duration(dest)
+    if frame_count is _DEFAULT_FRAME_COUNT and duration is _DEFAULT_DURATION:
+        got_n, got = _probe_cut_result(dest)
+    else:
+        got_n = frame_count(dest)
+        got = duration(dest)
     if got_n != frames or abs(got - frames * out_ft) > out_ft / 2:
         raise SystemExit(
             f"FAIL 切后时长不符：{dest.name}\n"
@@ -1328,9 +1553,15 @@ def music_visual_slots(plan: dict) -> list[tuple[float, float, str | None]]:
     return visual
 
 
-def _still_frames(episode: Path, plan: dict,
-                  parts_by_seg: dict[int, list[Path]], work: Path
-                  ) -> list[tuple[Path, float, float, int]]:
+def _still_frames(
+    episode: Path,
+    plan: dict,
+    parts_by_seg: dict[int, list[Path]],
+    work: Path,
+    *,
+    workers: int = 1,
+    src_cache: dict[str, tuple[float, float, float]] | None = None,
+) -> list[tuple[Path, float, float, int]]:
     """音乐段画面。
 
     前景音乐段（blocks）与结尾自然收尾段（natural 事件）都要画面——
@@ -1340,11 +1571,22 @@ def _still_frames(episode: Path, plan: dict,
     返回 [(视频段, 时长, 成片起点, 帧数)]；帧数按成片时间轴分（span_frames，D145）。
     """
     seg_starts = sorted((s["index"], s["start"]) for s in plan["segments"])
-    out = []
     visual = music_visual_slots(plan)
+    slots_out: list[tuple[Path, float, float, int] | None] = [None] * len(visual)
+    vis_jobs: list[tuple[int, dict, Path, int, float, float, float, float, tuple[float, float, float] | None]] = []
+    local_cache: dict[str, tuple[float, float, float]] = (
+        {_src_cache_key(k): v for k, v in src_cache.items()} if src_cache else {}
+    )
+    use_fast_probe = (
+        duration is _DEFAULT_DURATION
+        and frame_time is _DEFAULT_FRAME_TIME
+        and _video_tail_gap is _DEFAULT_TAIL_GAP
+    )
+
     for k, (start, dur, vis) in enumerate(visual):
         n = span_frames(start, start + dur)
-        # 声明了 `画面:` 的段从源片切；否则上一段最后一帧定格。
+        # 声明了 `画面:` 的段先在主线程做全量解析与 MAX_SLOW 前置校验，再多线程并行切片；
+        # 没声明的回退为上一段最后一帧定格。
         if vis:
             ep_tag, start_s = vis.rsplit(" ", 1)
             src = _source_path(episode, ep_tag)
@@ -1353,7 +1595,16 @@ def _still_frames(episode: Path, plan: dict,
             # 上限 MAX_SLOW：越限声称自己“还在动”就不成立了，当场 FAIL 而不是
             # 静默出一个卡帧的伪静止画面。
             slow = 1.0
-            src_dur = duration(src)
+            src_key = _src_cache_key(src)
+            info = local_cache.get(src_key)
+            if info is not None:
+                src_dur = info[0]
+            elif use_fast_probe:
+                info = _probe_source(Path(src))
+                local_cache[src_key] = info
+                src_dur = info[0]
+            else:
+                src_dur = duration(src)
             avail = src_dur - clip_start
             if clip_start + dur > src_dur + 1e-6:
                 slow = dur / avail if avail > 0 else float("inf")
@@ -1365,13 +1616,9 @@ def _still_frames(episode: Path, plan: dict,
                         f"     报错的诱因是素材太短：把 `画面:` 的起点往前挪（用满整段源）"
                         f"或改指一个更长的源片，不要指望放慢到卡住还看着像在动"
                     )
-            clip = {"source": str(src), "start": clip_start,
-                    "dur": dur}
+            clip = {"source": str(src), "start": clip_start, "dur": dur}
             seg_path = work / f"visual-{k:02d}.mp4"
-            cut(clip, seg_path, slow=slow, frames=n)
-            if slow > 1.0:
-                print(f"  放慢 {slow:.2f}×（{avail:.1f}s → {dur:.1f}s）", file=sys.stderr)
-            out.append((seg_path, dur, start, n))
+            vis_jobs.append((k, clip, seg_path, n, slow, avail, dur, start, info))
             continue
         prev = [idx for idx, st in seg_starts if st <= start + 1e-6]
         if not prev:
@@ -1392,8 +1639,7 @@ def _still_frames(episode: Path, plan: dict,
         # -pix_fmt 只打标签不做范围转换，concat 后整轨按限幅解释，
         # 黑场压扁白场溢出）；PNG 的 RGB→限幅 YUV 转换定义良好，
         # 再加 -vf format=yuv420p 显式走滤镜转换双保险。
-        # 定格段用 faster 而非 PRESET(medium)：单帧循环帧间冗余极大，
-        # medium 编码 285s 定格要几分钟而 faster 只要几十秒，观感无差别。
+        # 定格段用 CUT_PRESET：单帧循环帧间冗余极大，编码快且后续合成会重编。
         subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
              "-loop", "1", "-framerate", FPS, "-i", str(frame),
@@ -1404,8 +1650,25 @@ def _still_frames(episode: Path, plan: dict,
             check=True, capture_output=True,
         )
         print(f"  定格段 {k + 1}/{len(visual)}（{dur:.0f}s）", file=sys.stderr)
-        out.append((still, dur, start, n))
-    return out
+        slots_out[k] = (still, dur, start, n)
+
+    if vis_jobs:
+        def _run_vis(job):
+            k, clip, seg_path, n, slow, avail, dur, start, info = job
+            cut(clip, seg_path, slow=slow, frames=n, src_info=info)
+            return k, seg_path, dur, start, n, slow, avail
+
+        if workers > 1 and len(vis_jobs) > 1:
+            with ThreadPoolExecutor(max_workers=min(workers, len(vis_jobs))) as pool:
+                results = list(pool.map(_run_vis, vis_jobs))
+        else:
+            results = [_run_vis(job) for job in vis_jobs]
+        for k, seg_path, dur, start, n, slow, avail in results:
+            if slow > 1.0:
+                print(f"  放慢 {slow:.2f}×（{avail:.1f}s → {dur:.1f}s）", file=sys.stderr)
+            slots_out[k] = (seg_path, dur, start, n)
+
+    return [item for item in slots_out if item is not None]
 
 
 def _resolve_tag(episode: Path, ep_tag: str) -> tuple[str, str]:
@@ -1488,23 +1751,181 @@ FINAL = "05-final.mp4"
 FINAL_PART = ".05-final.partial.mp4"
 
 
-def _write_final(episode: Path, work: Path, cmd: list[str]) -> Path:
+def _write_final(
+    episode: Path,
+    work: Path,
+    cmd: list[str],
+    *,
+    extra_args: list[str] | None = None,
+) -> Path:
     """最终合成：先写同目录的 `.05-final.partial.mp4`，ffmpeg 成功后原子替换成 `05-final.mp4`。
 
     此前 ffmpeg 直接写 `05-final.mp4`（这一步 5–10 分钟）：中途被打断（AVA 的作业被停是整组
     SIGKILL）留下半截文件——上一版好的成片已被 `-y` 覆盖没了，而 status 只看文件在不在，
     把这一期报成「渲染完成，待质检」。临时名放同目录（同一文件系统，os.replace 才是原子的），
     后缀仍是 .mp4，ffmpeg 按它推断封装格式。失败 / 中断就删掉临时文件，旧成片原样不动。
+    `extra_args` 用于单遍多路输出（如同步落盘 `work/hud_clean_top.mp4`），默认 None 时 `cmd[-1]`
+    仍是 `.05-final.partial.mp4`，与既有测试完全兼容。
     """
     out = episode / FINAL
     part = episode / FINAL_PART
+    full_cmd = [*cmd, str(part.resolve()), *(extra_args or ())]
     try:
-        subprocess.run([*cmd, str(part.resolve())], check=True, capture_output=True, cwd=work)
+        subprocess.run(full_cmd, check=True, capture_output=True, cwd=work)
     except BaseException:
         part.unlink(missing_ok=True)
         raise
     os.replace(part, out)
     return out
+
+
+def _prepare_audio(
+    episode: Path,
+    audio_dir: Path,
+    manifest: dict,
+    music_plan: dict | None,
+    bgm_plan: list[tuple[dict, float, float]] | None,
+    work: Path,
+    *,
+    cancel: threading.Event | None = None,
+) -> tuple[Path, dict]:
+    """构建人声轨 + 音乐床/BGM 侧链混音 + 试听型时长不变量核查 + loudnorm 第一遍测量。
+
+    试听型（`music_plan is not None`）时由 run() 放到独立后台线程与 `_still_frames` 并行执行，
+    并通过 `cancel` 事件在主线程异常时尽早停止后续音频子阶段；普通期在主线程顺序执行。
+    """
+    def _check_cancel() -> None:
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError("audio preparation cancelled after video track error")
+
+    _check_cancel()
+    # 3. 拼人声轨。**每段首尾各加一小段淡入淡出再拼。**
+    #
+    # IndexTTS 的 mel 解码遇到停止符就收，尾音是被硬切掉的：2026-07-29 实测，
+    # 段 1 最后 5ms 的包络峰值还有 6409，下一段开头是 1——从满音量直接掉到静音，
+    # 这个包络阶跃就是听感上那声「蹬」。段落越响越明显。
+    # 12ms 短到听不出是淡出，但足以把阶跃磨掉；不改时长，所以排片时间轴不受影响。
+    segs = manifest["segments"]
+    voice = work / "voice.wav"
+
+    # 3.5 拼人声轨。
+    # 普通期：多线程并行做首尾淡入淡出后 concat -c copy 连续拼接（旧行为）。
+    # 试听型：直接把首尾 afade 并进 adelay+amix 单次滤镜图，省掉 N 次短 ffmpeg 启停与
+    # 中间 v*.wav 磁盘往返，同时保持输入句柄数与原 3.5 步完全一致。
+    if music_plan is not None:
+        seg_start = {s["index"]: s["start"] for s in music_plan["segments"]}
+        vfg, vin = [], []
+        for i, s in enumerate(segs):
+            src = (audio_dir / s["file"]).resolve()
+            vin += ["-i", str(src)]
+            vfg.append(
+                f"[{i}:a]afade=t=in:st=0:d={FADE_IN},"
+                f"afade=t=out:st={max(0.0, s['duration'] - FADE_OUT):.4f}:d={FADE_OUT},"
+                f"adelay={int(round(seg_start[s['index']] * 1000))}:all=1[v{i}];"
+            )
+        vfg.append(
+            "".join(f"[v{i}]" for i in range(len(segs)))
+            + f"amix=inputs={len(segs)}:duration=longest:normalize=0[outv]"
+        )
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+             *vin, "-filter_complex", "".join(vfg),
+             "-map", "[outv]", "-ac", "1", "-ar", "48000",
+             "-c:a", "pcm_s16le", str(voice)],
+            check=True, capture_output=True, cwd=work,
+        )
+    else:
+        def _fade_one(s: dict) -> Path:
+            src = (audio_dir / s["file"]).resolve()
+            dst = work / f"v{s['index']:03d}.wav"
+            subprocess.run(
+                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src),
+                 "-af", f"afade=t=in:st=0:d={FADE_IN},"
+                        f"afade=t=out:st={max(0.0, s['duration'] - FADE_OUT):.4f}:d={FADE_OUT}",
+                 "-c:a", "pcm_s16le", str(dst)],
+                check=True, capture_output=True,
+            )
+            return dst
+
+        if len(segs) > 1:
+            with ThreadPoolExecutor(max_workers=min(AFADE_WORKERS, len(segs))) as fpool:
+                faded = list(fpool.map(_fade_one, segs))
+        else:
+            faded = [_fade_one(s) for s in segs]
+
+        alst = work / "audio.txt"
+        alst.write_text("".join(f"file '{p.name}'\n" for p in faded),
+                        encoding="utf-8")
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "concat",
+             "-safe", "0", "-i", str(alst), "-c", "copy", str(voice)],
+            check=True, capture_output=True, cwd=work,
+        )
+
+    # 4. 音乐（可选）。试听型走音乐床（前景/BGM/自然播放事件序列）；
+    # 普通期走全片 BGM 铺底（旧路径，行为不变）。
+    _check_cancel()
+    total = duration(voice)
+    if music_plan is not None:
+        bed = _music_bed(music_plan, work, episode)
+    else:
+        bed = _bgm_bed(bgm_plan, total, work)
+    _check_cancel()
+    voice_raw = voice  # 4.5 要查混音前的人声轨（B1'：混音总长测不出人声位置错）
+    if bed:
+        # sidechaincompress 的输出时长 = **先 EOF 的输入**（ffmpeg 8 实测，
+        # 不是主输入时长）——试听型音乐床 796s、人声 510s，侧链先 EOF 会把
+        # 音乐床尾部整段截掉（三审 S1'：natural 收尾 510-796s 静音消失）。
+        # 侧链分支先 pad 到全轴：普通期 bed==voice 恒等长不踩，统一 pad 无害；
+        # pad 出来的静音不触发压缩，旁白结束后的音乐段自然不被压。
+        want = (music_plan["total_duration"] if music_plan is not None
+                else total)
+        mixed = work / "mixed.wav"
+        # sidechaincompress：以人声为触发，口播一出声就把 BGM 压下去。
+        # 前景段旁白停、无触发信号，自然不被压——同一床两个状态，机制复用。
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+             "-i", str(bed), "-i", str(voice),
+             "-filter_complex",
+             f"[1:a]apad=whole_dur={want:.3f},asplit=2[sc][vo];"
+             f"[0:a][sc]sidechaincompress=threshold={BGM_THRESHOLD}:ratio={BGM_RATIO}:"
+             f"attack={BGM_ATTACK}:release={BGM_RELEASE}:makeup=1[duck];"
+             f"[duck][vo]amix=inputs=2:duration=longest:normalize=0[out]",
+             "-map", "[out]", "-ac", "1", "-ar", "48000",
+             "-c:a", "pcm_s16le", str(mixed)],
+            check=True, capture_output=True,
+        )
+        voice = mixed
+
+    # 4.5 试听型不变量：三条音视频轨分别校验时长，防「有轨没接时间轴」。
+    # 分开查（二轮审查 B1'）：混音后总长 = amix longest = max(bed, voice)，
+    # 人声位置错（挤在 0-222s）不改总长，查混音结果是测不出 F1 类回归的。
+    # 普通期不适用（没有时间轴）。
+    _check_cancel()
+    if music_plan is not None:
+        want = music_plan["total_duration"]
+        # 人声轨（混音前）必须铺到最后一段落结束；音乐床必须铺满全轴。
+        # 视频轨拼完就按帧核过（check_video_track，D145）：此前这里的容差是
+        # 「每段 1 帧」，191 段放过 6 s，3.6 s 的累积漂移正好在容差里。
+        voice_end = max(s["start"] + s["dur"]
+                        for s in music_plan["segments"])
+        checks = [("人声轨", voice_raw, voice_end, 0.05)]
+        if bed:
+            checks.append(("音乐床", bed, want, 0.05))
+        checks.append(("混音轨", voice, want, 0.05))
+        for name, p, want_len, tol in checks:
+            got = duration(p)
+            if abs(got - want_len) > tol:
+                raise SystemExit(
+                    f"FAIL {name}时长 {got:.1f}s != 应达 {want_len:.1f}s"
+                    f"（容差 {tol:.2f}s）——有轨没接时间轴")
+
+    # 响度归一两遍（2026-08-16 改）：先量整条音频，再线性增益重放——
+    # 单次 loudnorm 动态模式会压掉音乐段后的旁白（实测差 5dB），
+    # linear=true + measured_* 保证段落间相对响度与混音时一致。
+    _check_cancel()
+    loud = _measure_loudnorm(voice)
+    return voice, loud
 
 
 def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
@@ -1617,15 +2038,34 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
 
     work = Path(tempfile.mkdtemp(prefix="render-", dir=str(episode)))
     try:
-        # 1. 逐个切片（两道守卫在 cut 里，多线程并行加速）
+        # 1. 逐个切片（两道守卫在 cut 里，多线程并行加速；源文件元信息按唯一路径预探一次并缓存）
+        #    注意：不与 6 路并发 x264 切片同时启动后台音频线（2026-11 实测：同时跑会争抢 P 核与
+        #    外置 USB SSD 带宽，令 EP2 112 段 amix 从 4.6s 拖到 49.8s、切片总核时增 36%）；
+        #    改在切片完成后立即起后台音频线，与步骤 2 的音乐段画面 / concat / check_video_track 重叠。
         clips_flat = [c for s in segments for c in s["clips"]]
         n = len(clips_flat)
         jobs = [(c, work / f"c{i:03d}.mp4", nf)
                 for i, (c, nf) in enumerate(zip(clips_flat, clip_frames), 1)]
         workers = min(6, os.cpu_count() or 1)
+        src_cache: dict[str, tuple[float, float, float]] = {}
+        if (
+            duration is _DEFAULT_DURATION
+            and frame_time is _DEFAULT_FRAME_TIME
+            and _video_tail_gap is _DEFAULT_TAIL_GAP
+            and not any(c["start"] < 0 for c in clips_flat)
+        ):
+            uniq_srcs = list(dict.fromkeys(
+                _src_cache_key(c["source"]) for c in clips_flat if Path(c["source"]).is_file()
+            ))
+            if len(uniq_srcs) > 1:
+                with ThreadPoolExecutor(max_workers=min(workers, len(uniq_srcs))) as ppool:
+                    for src_key, info in zip(uniq_srcs, ppool.map(lambda s: _probe_source(Path(s)), uniq_srcs)):
+                        src_cache[src_key] = info
+            elif uniq_srcs:
+                src_cache[uniq_srcs[0]] = _probe_source(Path(uniq_srcs[0]))
 
         def _do_cut(j):
-            cut(j[0], j[1], frames=j[2])
+            cut(j[0], j[1], frames=j[2], src_info=src_cache.get(_src_cache_key(j[0]["source"])))
             return j[1]
 
         # 进度在主线程打印：工作线程只干活。`done_cnt += 1` 放 worker 里是非原子
@@ -1637,163 +2077,73 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
                 print(f"\r  切片 {i}/{n}", end="", flush=True)
         print()
 
-        # 2. 拼画面轨。
+        # 2. 拼画面轨 + 音频轨（步骤 3–4.5 + loudnorm 测量）。
         #
         # 段落切片、定格段、OP 画面段全部用同一组编码参数
         # （cut 的 -vf/-r 与定格段的 -framerate/-r 都来自同一常量），
         # 所以统一走 concat demuxer + `-c copy`，秒级完成，不做全量重编码。
-        # music_plan 已在 run() 入口解析（配置前置校验）。
+        # - 试听型（music_plan is not None）：步骤 2 的 `_still_frames` 切片耗时数十秒，
+        #   与后台 `_prepare_audio` 重叠执行，同时把 `_still_frames` 并发收窄至 ≤4 留出核与 I/O 余量；
+        #   若视频轨前置报错则立刻 cancel + shutdown(wait=False) 不阻塞异常传播。
+        # - 普通期（music_plan is None）：步骤 2 仅 concat + 校验（<1s），无重叠收益，顺序执行更干净。
         video = work / "video.mp4"
+        audio_pool: ThreadPoolExecutor | None = None
+        audio_fut = None
+        audio_cancel = threading.Event()
         if music_plan is not None:
-            parts_by_seg: dict[int, list[Path]] = {}
-            i = 0
-            for s in segments:
-                parts_by_seg[s["index"]] = parts[i:i + len(s["clips"])]
-                i += len(s["clips"])
-            stills = _still_frames(episode, music_plan, parts_by_seg, work)
-            # 按成片时间交错：段落切片序列与定格段按起点排序后依次 concat。
-            elems: list[tuple[float, list[Path]]] = [
-                (seg_span[s["index"]][0], parts_by_seg[s["index"]])
-                for s in segments]
-            for still, _dur, start, _n in stills:
-                elems.append((start, [still]))
-            elems.sort(key=lambda e: e[0])
-            concat_parts = [f for _at, files in elems for f in files]
-        else:
-            concat_parts = parts
-        lst = work / "concat.txt"
-        lst.write_text("".join(f"file '{p.name}'\n" for p in concat_parts),
-                       encoding="utf-8")
-        print(f"  拼画面轨（{len(concat_parts)} 段）…", file=sys.stderr)
-        subprocess.run(
-            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "concat",
-             "-safe", "0", "-i", str(lst), "-c", "copy", str(video)],
-            check=True, capture_output=True, cwd=work,
-        )
-        check_video_track(video, video_frames, video_total)
-        clean_top_tmp: Path | None = None
-        if resolved_chaps is not None or music_spans:
-            clean_top_tmp = work / "hud_clean_top.mp4"
-            strip_h = chapters_mod.hud_strip_height(H)
-            subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-                 "-i", str(video), "-vf", f"crop={W}:{strip_h}:0:0",
-                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "16",
-                 "-pix_fmt", "yuv420p", "-r", FPS, str(clean_top_tmp)],
-                check=True, capture_output=True,
+            audio_pool = ThreadPoolExecutor(max_workers=1)
+            audio_fut = audio_pool.submit(
+                _prepare_audio, episode, audio_dir, manifest, music_plan, bgm_plan, work,
+                cancel=audio_cancel,
             )
-
-        # 3. 拼人声轨。**每段首尾各加一小段淡入淡出再拼。**
-        #
-        # IndexTTS 的 mel 解码遇到停止符就收，尾音是被硬切掉的：2026-07-29 实测，
-        # 段 1 最后 5ms 的包络峰值还有 6409，下一段开头是 1——从满音量直接掉到静音，
-        # 这个包络阶跃就是听感上那声「蹬」。段落越响越明显。
-        # 12ms 短到听不出是淡出，但足以把阶跃磨掉；不改时长，所以排片时间轴不受影响。
-        faded = []
-        for s in manifest["segments"]:
-            src = (audio_dir / s["file"]).resolve()
-            dst = work / f"v{s['index']:03d}.wav"
-            subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src),
-                 "-af", f"afade=t=in:st=0:d={FADE_IN},"
-                        f"afade=t=out:st={max(0.0, s['duration'] - FADE_OUT):.4f}:d={FADE_OUT}",
-                 "-c:a", "pcm_s16le", str(dst)],
-                check=True, capture_output=True,
-            )
-            faded.append(dst)
-
-        # 3.5 拼人声轨。
-        # 普通期：段落 concat 连续拼接（旧行为）。
-        # 试听型：段落按 music_plan 的成片起点 adelay 到时间轴上再 amix——
-        # 音乐段（前景/BGM）占的成片时间必须留空，旁白只在段落位置出声
-        # （审查 F1：人声不接时间轴 = 旁白全挤在 0-222s，前景音乐被持续侧链压制）。
-        if music_plan is not None:
-            seg_start = {s["index"]: s["start"] for s in music_plan["segments"]}
-            vfg, vin = [], []
-            for i, s in enumerate(manifest["segments"]):
-                vin.append(["-i", str(faded[i])])
-                vfg.append(f"[{i}:a]adelay={int(round(seg_start[s['index']] * 1000))}"
-                           f":all=1[v{i}];")
-            vfg.append("".join(f"[v{i}]" for i in range(len(vin)))
-                       + f"amix=inputs={len(vin)}:duration=longest:normalize=0"
-                       + "[outv]")
-            voice = work / "voice.wav"
-            subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-                 *[x for pair in vin for x in pair],
-                 "-filter_complex", "".join(vfg),
-                 "-map", "[outv]", "-ac", "1", "-ar", "48000",
-                 "-c:a", "pcm_s16le", str(voice)],
-                check=True, capture_output=True, cwd=work,
-            )
-        else:
-            alst = work / "audio.txt"
-            alst.write_text("".join(f"file '{p.name}'\n" for p in faded),
-                            encoding="utf-8")
-            voice = work / "voice.wav"
+        try:
+            if music_plan is not None:
+                parts_by_seg: dict[int, list[Path]] = {}
+                i = 0
+                for s in segments:
+                    parts_by_seg[s["index"]] = parts[i:i + len(s["clips"])]
+                    i += len(s["clips"])
+                # 与后台音频线重叠时留出 2 核与外置盘带宽余量，避免 6 路 x264 拖慢 amix/loudnorm
+                still_workers = max(1, min(workers - 2, 4))
+                stills = _still_frames(
+                    episode, music_plan, parts_by_seg, work,
+                    workers=still_workers, src_cache=src_cache,
+                )
+                # 按成片时间交错：段落切片序列与定格段按起点排序后依次 concat。
+                elems: list[tuple[float, list[Path]]] = [
+                    (seg_span[s["index"]][0], parts_by_seg[s["index"]])
+                    for s in segments]
+                for still, _dur, start, _n in stills:
+                    elems.append((start, [still]))
+                elems.sort(key=lambda e: e[0])
+                concat_parts = [f for _at, files in elems for f in files]
+            else:
+                concat_parts = parts
+            lst = work / "concat.txt"
+            lst.write_text("".join(f"file '{p.name}'\n" for p in concat_parts),
+                           encoding="utf-8")
+            print(f"  拼画面轨（{len(concat_parts)} 段）…", file=sys.stderr)
             subprocess.run(
                 ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "concat",
-                 "-safe", "0", "-i", str(alst), "-c", "copy", str(voice)],
+                 "-safe", "0", "-i", str(lst), "-c", "copy", str(video)],
                 check=True, capture_output=True, cwd=work,
             )
-
-        # 4. 音乐（可选）。试听型走音乐床（前景/BGM/自然播放事件序列）；
-        # 普通期走全片 BGM 铺底（旧路径，行为不变）。
-        total = duration(voice)
-        if music_plan is not None:
-            bed = _music_bed(music_plan, work, episode)
+            check_video_track(video, video_frames, video_total)
+        except BaseException:
+            if audio_pool is not None:
+                audio_cancel.set()
+                audio_pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        if audio_pool is not None and audio_fut is not None:
+            try:
+                voice, loud = audio_fut.result()
+            finally:
+                audio_pool.shutdown(wait=True)
         else:
-            bed = _bgm_bed(bgm_plan, total, work)
-        voice_raw = voice  # 4.5 要查混音前的人声轨（B1'：混音总长测不出人声位置错）
-        if bed:
-            # sidechaincompress 的输出时长 = **先 EOF 的输入**（ffmpeg 8 实测，
-            # 不是主输入时长）——试听型音乐床 796s、人声 510s，侧链先 EOF 会把
-            # 音乐床尾部整段截掉（三审 S1'：natural 收尾 510-796s 静音消失）。
-            # 侧链分支先 pad 到全轴：普通期 bed==voice 恒等长不踩，统一 pad 无害；
-            # pad 出来的静音不触发压缩，旁白结束后的音乐段自然不被压。
-            want = (music_plan["total_duration"] if music_plan is not None
-                    else total)
-            mixed = work / "mixed.wav"
-            # sidechaincompress：以人声为触发，口播一出声就把 BGM 压下去。
-            # 前景段旁白停、无触发信号，自然不被压——同一床两个状态，机制复用。
-            subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-                 "-i", str(bed), "-i", str(voice),
-                 "-filter_complex",
-                 f"[1:a]apad=whole_dur={want:.3f},asplit=2[sc][vo];"
-                 f"[0:a][sc]sidechaincompress=threshold={BGM_THRESHOLD}:ratio={BGM_RATIO}:"
-                 f"attack={BGM_ATTACK}:release={BGM_RELEASE}:makeup=1[duck];"
-                 f"[duck][vo]amix=inputs=2:duration=longest:normalize=0[out]",
-                 "-map", "[out]", "-ac", "1", "-ar", "48000",
-                 "-c:a", "pcm_s16le", str(mixed)],
-                check=True, capture_output=True,
-            )
-            voice = mixed
+            voice, loud = _prepare_audio(episode, audio_dir, manifest, music_plan, bgm_plan, work)
 
-        # 4.5 试听型不变量：三条音视频轨分别校验时长，防「有轨没接时间轴」。
-        # 分开查（二轮审查 B1'）：混音后总长 = amix longest = max(bed, voice)，
-        # 人声位置错（挤在 0-222s）不改总长，查混音结果是测不出 F1 类回归的。
-        # 普通期不适用（没有时间轴）。
-        if music_plan is not None:
-            want = music_plan["total_duration"]
-            # 人声轨（混音前）必须铺到最后一段落结束；音乐床必须铺满全轴。
-            # 视频轨拼完就按帧核过（check_video_track，D145）：此前这里的容差是
-            # 「每段 1 帧」，191 段放过 6 s，3.6 s 的累积漂移正好在容差里。
-            voice_end = max(s["start"] + s["dur"]
-                            for s in music_plan["segments"])
-            checks = [("人声轨", voice_raw, voice_end, 0.05)]
-            if bed:
-                checks.append(("音乐床", bed, want, 0.05))
-            checks.append(("混音轨", voice, want, 0.05))
-            for name, p, want_len, tol in checks:
-                got = duration(p)
-                if abs(got - want_len) > tol:
-                    raise SystemExit(
-                        f"FAIL {name}时长 {got:.1f}s != 应达 {want_len:.1f}s"
-                        f"（容差 {tol:.2f}s）——有轨没接时间轴")
-
-        # 5. 字幕 + 合成 + 响度归一
-        # 试听型的段落起点带音乐段偏移（starts），普通期 None = 段落连续（旧行为）。
+        # 5. 字幕 + 合成 + 响度归一（有章节或音乐顶栏时经 split=2 单遍同时落盘 hud_clean_top.mp4，
+        #    避免单独二次解码整条 1080p video.mp4）
         seg_starts = None
         if music_plan is not None:
             seg_starts = {s["index"]: s["start"]
@@ -1819,26 +2169,62 @@ def run(episode: Path, keep: bool = False, force: bool = False) -> Path:
                 except OSError:
                     shutil.copytree(fonts_dir.resolve(), fonts_link)
             vf_ass = f"ass={ass.name}:fontsdir=_fonts"
-        print(f"  最终合成（13 分钟重编码，约 5-10 分钟）…", file=sys.stderr)
-        # 响度归一两遍（2026-08-16 改）：先量整条音频，再线性增益重放——
-        # 单次 loudnorm 动态模式会压掉音乐段后的旁白（实测差 5dB），
-        # linear=true + measured_* 保证段落间相对响度与混音时一致。
-        loud = _measure_loudnorm(voice)
-        out_video = _write_final(episode, work, [
-             "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-             "-i", str(video), "-i", str(voice),
-             # ass 滤镜要在工作目录里跑，路径带冒号/方括号会把滤镜串解析炸掉
-             "-vf", vf_ass,
-             "-af", (f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}:linear=true"
-                     f":measured_I={loud['input_i']}"
-                     f":measured_TP={loud['input_tp']}"
-                     f":measured_LRA={loud['input_lra']}"
-                     f":measured_thresh={loud['input_thresh']}"
-                     f":offset={loud['target_offset']}"),
-             "-c:v", "libx264", "-preset", PRESET, "-crf", CRF, "-pix_fmt", "yuv420p",
-             "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-             "-map", "0:v:0", "-map", "1:a:0", "-shortest",
-             "-movflags", "+faststart"])
+        enc_args = final_video_encoder_args()
+        enc_label = "h264_videotoolbox" if "h264_videotoolbox" in enc_args else f"libx264/{PRESET}"
+        print(f"  最终合成（{enc_label}）…", file=sys.stderr)
+        loudnorm_af = (
+            f"loudnorm=I={LUFS}:TP={TRUE_PEAK}:LRA={LRA}:linear=true"
+            f":measured_I={loud['input_i']}"
+            f":measured_TP={loud['input_tp']}"
+            f":measured_LRA={loud['input_lra']}"
+            f":measured_thresh={loud['input_thresh']}"
+            f":offset={loud['target_offset']}"
+        )
+        need_clean_top = resolved_chaps is not None or bool(music_spans)
+        clean_top_tmp: Path | None = None
+        if need_clean_top:
+            clean_top_tmp = work / "hud_clean_top.mp4"
+            strip_h = chapters_mod.hud_strip_height(H)
+            # 音频 loudnorm 必须留在独立 `-af` 链，不可放进含视频的 `-filter_complex`：
+            # 异源 concat 片段间若存在 color_range / pix_fmt 切换，libavfilter 会触发整图
+            # reinit_filters，把同图里的 loudnorm 中途重建并静默丢弃 ~3 s 内部缓冲。
+            fc = (
+                f"[0:v:0]split=2[vmain][vhud];"
+                f"[vmain]{vf_ass}[vout];"
+                f"[vhud]crop={W}:{strip_h}:0:0[hout]"
+            )
+            final_cmd = [
+                "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                "-i", str(video), "-i", str(voice),
+                # ass 滤镜要在工作目录里跑，路径带冒号/方括号会把滤镜串解析炸掉
+                "-filter_complex", fc,
+                "-map", "[vout]", "-map", "1:a:0",
+                "-af", loudnorm_af,
+                *enc_args,
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                "-shortest", "-movflags", "+faststart",
+            ]
+            # 净顶条是小画幅（如 1920x128）辅助资产，用 CPU libx264 veryfast crf 16 并发编码，
+            # 既不与主画面争夺 Apple Silicon 媒体引擎，又保持与旧版 fast/16 接近的紧凑体积。
+            extra_args = [
+                "-map", "[hout]", "-an",
+                "-frames:v", str(video_frames),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+                "-pix_fmt", "yuv420p", "-r", FPS,
+                str(clean_top_tmp.resolve()),
+            ]
+            out_video = _write_final(episode, work, final_cmd, extra_args=extra_args)
+        else:
+            out_video = _write_final(episode, work, [
+                "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                "-i", str(video), "-i", str(voice),
+                # ass 滤镜要在工作目录里跑，路径带冒号/方括号会把滤镜串解析炸掉
+                "-vf", vf_ass,
+                "-af", loudnorm_af,
+                *enc_args,
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                "-map", "0:v:0", "-map", "1:a:0", "-shortest",
+                "-movflags", "+faststart"])
         if resolved_chaps is not None:
             chap_txt = chapters_mod.format_chapters_txt(
                 chapters_mod.episode_chapter_entries(resolved_chaps), video_total
