@@ -450,3 +450,104 @@ class TestQcPerfMerging:
         ], check=True, capture_output=True)
         bad_chk = qc._audio_packet_check(broken, qc._duration(broken, "a:0"))
         assert bad_chk is not None and bad_chk.ok is False and "缺失" in bad_chk.detail
+
+
+class TestSilenceDetectionAndProfileWhitelist:
+    """ffmpeg 8 silencedetect 换行前缀解析 + avsync 块尾豁免 + AAC-LC profile 白名单。"""
+
+    def test_parse_silences兼容ffmpeg8前缀交错日志与片尾未闭合静音(self):
+        stderr = (
+            "[silencedetect @ 0x7bcac58420] silence_start: 10.5\n"
+            "[Parsed_loudnorm_1 @ 0x123] {\"input_i\": \"-16.0\"}\n"
+            "[silencedetect @ 0x7bcac58420] silence_end: 13.8 | silence_duration: 3.3\n"
+            "[silencedetect @ 0x7bcac58420] silence_start: 55.0\n"
+        )
+        assert qc._parse_silences(stderr, end_dur=60.0) == [(10.5, 13.8), (55.0, 60.0)]
+        assert qc._parse_silences(stderr) == [(10.5, 13.8)]
+
+    def test_真实视频_ffmpeg8静音门禁能抓出中段静音且不误杀正常音频(self, tmp_path):
+        import shutil
+        import subprocess as sp
+
+        if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+            pytest.skip("需要 ffmpeg/ffprobe")
+
+        # 构造 4.2s 真实 MP4：0.8s 音调 + 2.6s 真静音（> SILENCE_MAX=2.0s）+ 0.8s 音调
+        vid = tmp_path / "with_silence.mp4"
+        sp.run([
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=4.2",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.8",
+            "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=2.6",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.8",
+            "-filter_complex", "[1:a][2:a][3:a]concat=n=3:v=0:a=1[a]",
+            "-map", "0:v", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", str(vid),
+        ], check=True, capture_output=True)
+
+        checks = qc.check(vid)
+        sil = next(c for c in checks if "静音" in c.name)
+        assert sil.ok is False, f"真实 >2s 静音必须被门禁检出，实际 detail={sil.detail!r}"
+        assert "0.8s" in sil.detail
+
+    def test_avsync音乐块尾端淡出静音被豁免(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        vid = tmp_path / "05-final.mp4"
+        vid.write_bytes(b"stub")
+        monkeypatch.setattr(
+            qc, "_music_plan",
+            lambda _ep: {
+                "total_duration": 100.0,
+                "tracks": [],
+                "blocks": [{"label": "M1", "start": 10.0, "dur": 40.0, "avsync": "S01E01"}],
+                "segments": [],
+            },
+        )
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "ffprobe":
+                return sp.CompletedProcess(cmd, 0, stdout="100.0\n", stderr="")
+            if any("silencedetect" in a for a in cmd):
+                err = (
+                    '{"input_i": "-16.0", "input_tp": "-1.5"}\n'
+                    "[silencedetect @ 0xabc] silence_start: 47.0\n"
+                    "[silencedetect @ 0xabc] silence_end: 50.2 | silence_duration: 3.2\n"
+                )
+                return sp.CompletedProcess(cmd, 0, stdout="", stderr=err)
+            return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(qc.subprocess, "run", fake_run)
+        checks = qc.check(vid)
+        sil = next(c for c in checks if "静音" in c.name)
+        assert sil.ok is True
+
+    @pytest.mark.parametrize("profile,want_checked", [
+        ("LC", True),
+        ("", True),
+        ("HE-AAC", False),
+        ("LD", False),
+        ("ELD", False),
+    ])
+    def test_audio_packet_check仅校验AAC_LC白名单(self, tmp_path, monkeypatch, profile, want_checked):
+        import json as _json
+        import subprocess as sp
+
+        payload = _json.dumps({
+            "streams": [{
+                "codec_name": "aac",
+                "profile": profile,
+                "sample_rate": "48000",
+                "nb_frames": "100",
+            }]
+        })
+        monkeypatch.setattr(
+            qc.subprocess, "run",
+            lambda cmd, **kw: sp.CompletedProcess(cmd, 0, stdout=payload, stderr=""),
+        )
+        got = qc._audio_packet_check(tmp_path / "x.mp4", 10.0)
+        if want_checked:
+            assert got is not None and got.ok is False
+        else:
+            assert got is None

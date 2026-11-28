@@ -112,10 +112,13 @@ def scan(video: Path, duration: float | None = None) -> list[tuple[float, float]
     一集约一分钟（实测 120 秒素材 5.06 秒挂钟，瓶颈在 10bit HEVC 解码；
     先 `scale` 降分辨率不会更快，因为省的是滤镜的钱不是解码的钱）。
     """
-    cmd = ["ffmpeg", "-nostdin", "-v", "info", "-nostats", "-i", str(video),
-           "-an", "-sn", "-dn", "-vf", f"scdet=threshold={SCAN_THRESHOLD}", "-f", "null", "-"]
+    cmd = ["ffmpeg", "-nostdin", "-v", "info", "-nostats"]
     if duration is not None:
-        cmd[6:6] = ["-t", f"{duration:.3f}"]
+        # 显式拼在 `-i` 之前作为输入截断时长；此前按魔数下标 `cmd[6:6]` 插入，
+        # 补加 `-nostdin` 后把 `-t` 塞进 `-i` 与视频路径之间导致 ffmpeg 直接报错。
+        cmd += ["-t", f"{duration:.3f}"]
+    cmd += ["-i", str(video), "-an", "-sn", "-dn",
+            "-vf", f"scdet=threshold={SCAN_THRESHOLD}", "-f", "null", "-"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"FAIL ffmpeg 场景检测失败：{video}\n{r.stderr[-800:]}")

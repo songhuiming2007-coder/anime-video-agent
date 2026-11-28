@@ -539,3 +539,32 @@ class TestSourcePathPortability:
         with pytest.raises(self._Stop):
             shots.caption_frames("番", "S01E01", out_dir, dest_dir=tmp_path / "frames")
         assert seen == [self._f, self._f]
+
+
+class TestScanDuration:
+    """shots.scan(video, duration=...) 真实产物护栏：`-t` 必须位于 `-i` 之前而不撕裂 `-i <video>`。"""
+
+    def test_scan带duration仅扫描前N秒且不报错(self, tmp_path):
+        import shutil
+        import subprocess as sp
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("需要 ffmpeg")
+        vid = tmp_path / "cuts.mp4"
+        # 6s 视频：1.5s 与 4.5s 各有一处硬切
+        sp.run([
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=red:s=64x64:r=24:d=1.5",
+            "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=3.0",
+            "-f", "lavfi", "-i", "color=c=green:s=64x64:r=24:d=1.5",
+            "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
+            "-map", "[v]", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", str(vid),
+        ], check=True, capture_output=True)
+
+        full_cuts = shots.scan(vid)
+        assert any(abs(t - 1.5) < 0.1 for t, _ in full_cuts)
+        assert any(abs(t - 4.5) < 0.1 for t, _ in full_cuts)
+
+        partial_cuts = shots.scan(vid, duration=3.0)
+        assert any(abs(t - 1.5) < 0.1 for t, _ in partial_cuts)
+        assert all(t <= 3.05 for t, _ in partial_cuts)

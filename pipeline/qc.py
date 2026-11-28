@@ -132,7 +132,8 @@ def _audio_packet_check(video: Path, adur: float) -> Check | None:
     if str(st.get("codec_name", "")).lower() != "aac":
         return None
     prof = str(st.get("profile", "")).lower()
-    if "he" in prof or "sbr" in prof:
+    # 仅 AAC-LC 恒定每帧 1024 样本；HE-AAC/SBR(2048)、LD/ELD(480/512) 帧长不同，按判据 4 跳过不定罪
+    if prof not in ("lc", ""):
         return None
     try:
         sr = int(st["sample_rate"])
@@ -271,6 +272,26 @@ def _black_defects(mapped: list[tuple[str, float, float, float, float, int, int]
             defects.extend((src, flo, fhi, slo, shi)
                            for src, slo, shi, flo, fhi, _, _ in un_sp)
     return defects
+
+
+def _parse_silences(stderr: str, *, end_dur: float | None = None) -> list[tuple[float, float]]:
+    """解析 ffmpeg silencedetect 的 stderr（兼容 ffmpeg 7/8 带 `[silencedetect @ 0x...]` 前缀的换行格式）。
+
+    原正则 `silence_start: ...\\s+silence_end: ...` 在 ffmpeg 8 下因第二行开头带滤镜前缀恒返回空，
+    导致静音门禁静默失效。按 token 顺序配对可同时兼容前缀、交错的 loudnorm 日志及片尾未闭合静音。
+    """
+    out: list[tuple[float, float]] = []
+    start: float | None = None
+    for m in re.finditer(r"silence_(start|end):\s*([\d.]+)", stderr):
+        kind, val = m.group(1), float(m.group(2))
+        if kind == "start":
+            start = val
+        elif start is not None:
+            out.append((start, val))
+            start = None
+    if start is not None and end_dur is not None and end_dur >= start:
+        out.append((start, end_dur))
+    return out
 
 
 def _silence_exempt(start: float, end: float, song_ends, card_wins) -> bool:
@@ -545,17 +566,19 @@ def check(video: Path, plan: dict | None = None,
                      not defects and not probe_err and not src_errs, detail))
 
     # 静音。试听型的歌曲自然收尾（fade 尾音 < -45dB）不是缺陷——
-    # 静音区间尾部对齐某个音乐事件终点（曲目/前景/BGM 段的结束）就豁免
-    # （2026-08-16 实测：Planetes 自然收尾 793.6s、Departures 尾段 428.1s）。
+    # 静音区间尾部对齐某个音乐事件终点（曲目/前景/BGM/avsync 试看块的结束）就豁免
+    # （2026-08-16 实测：Planetes 自然收尾 793.6s、Departures 尾段 428.1s；
+    #  2026-11-28 补齐 D86 avsync 试看块终点，其存在于 mplan["blocks"] 而不在 tracks 中）。
     song_ends: set[float] = set()
     if mplan:
-        for tr in mplan["tracks"]:
+        for tr in mplan.get("tracks", []):
             for ev in tr["events"]:
                 song_ends.add(round(ev["at"] + ev["t1"] - ev["t0"], 1))
+        for b in mplan.get("blocks", []):
+            song_ends.add(round(b["start"] + b["dur"], 1))
     card_wins = ([(p["offset"], p["offset"] + p["duration"])
                   for p in asm["parts"] if p["kind"] == "card"] if asm else [])
-    sils = [(float(s), float(e)) for s, e in re.findall(
-        r"silence_start: ([\d.]+)\s+silence_end: ([\d.]+)", err_a)] if rc_a == 0 else []
+    sils = _parse_silences(err_a, end_dur=adur) if rc_a == 0 else []
     bad = [s for s, e in sils if not _silence_exempt(s, e, song_ends, card_wins)]
     if rc_a != 0:
         sil_detail = f"ffmpeg 退出码 {rc_a}：{_tail(err_a)}（静音检测没跑成，不判无静音）"
